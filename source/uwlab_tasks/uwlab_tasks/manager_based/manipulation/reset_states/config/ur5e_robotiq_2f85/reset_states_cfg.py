@@ -25,7 +25,7 @@ from uwlab_tasks.manager_based.manipulation.reset_states.config.ur5e_robotiq_2f8
     Ur5eRobotiq2f85RelativeOSCAction,
 )
 
-from ... import mdp as task_mdp
+from ... import mdp as omni_reset_mdp
 
 
 @configclass
@@ -109,7 +109,7 @@ class ResetStatesBaseEventCfg:
 
     # startup: low friction to avoid slip
     reset_robot_material = EventTerm(
-        func=task_mdp.randomize_rigid_body_material,  # type: ignore
+        func=omni_reset_mdp.randomize_rigid_body_material,  # type: ignore
         mode="startup",
         params={
             "static_friction_range": (0.3, 0.3),
@@ -122,7 +122,7 @@ class ResetStatesBaseEventCfg:
     )
 
     insertive_object_material = EventTerm(
-        func=task_mdp.randomize_rigid_body_material,  # type: ignore
+        func=omni_reset_mdp.randomize_rigid_body_material,  # type: ignore
         mode="startup",
         params={
             "static_friction_range": (0.3, 0.3),
@@ -135,7 +135,7 @@ class ResetStatesBaseEventCfg:
     )
 
     receptive_object_material = EventTerm(
-        func=task_mdp.randomize_rigid_body_material,  # type: ignore
+        func=omni_reset_mdp.randomize_rigid_body_material,  # type: ignore
         mode="startup",
         params={
             "static_friction_range": (0.3, 0.3),
@@ -149,10 +149,10 @@ class ResetStatesBaseEventCfg:
 
     # reset
 
-    reset_everything = EventTerm(func=task_mdp.reset_scene_to_default, mode="reset", params={})
+    reset_everything = EventTerm(func=omni_reset_mdp.reset_scene_to_default, mode="reset", params={})
 
     reset_robot_pose = EventTerm(
-        func=task_mdp.reset_root_states_uniform,
+        func=omni_reset_mdp.reset_root_states_uniform,
         mode="reset",
         params={
             "pose_range": {
@@ -169,7 +169,7 @@ class ResetStatesBaseEventCfg:
     )
 
     reset_receptive_object_pose = EventTerm(
-        func=task_mdp.reset_root_states_uniform,
+        func=omni_reset_mdp.reset_root_states_uniform,
         mode="reset",
         params={
             "pose_range": {
@@ -191,7 +191,7 @@ class ResetStatesBaseEventCfg:
 @configclass
 class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
     reset_insertive_object_pose = EventTerm(
-        func=task_mdp.reset_root_states_uniform,
+        func=omni_reset_mdp.reset_root_states_uniform,
         mode="reset",
         params={
             "pose_range": {
@@ -210,7 +210,7 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
     )
 
     reset_end_effector_pose = EventTerm(
-        func=task_mdp.reset_end_effector_round_fixed_asset,
+        func=omni_reset_mdp.reset_end_effector_round_fixed_asset,
         mode="reset",
         params={
             "fixed_asset_cfg": SceneEntityCfg("robot"),
@@ -233,7 +233,7 @@ class ObjectAnywhereEEAnywhereEventCfg(ResetStatesBaseEventCfg):
 @configclass
 class ObjectRestingEEGraspedEventCfg(ResetStatesBaseEventCfg):
     reset_insertive_object_pose_from_reset_states = EventTerm(
-        func=task_mdp.MultiResetManager,
+        func=omni_reset_mdp.MultiResetManager,
         mode="reset",
         params={
             "base_paths": [f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEAnywhere"],
@@ -242,7 +242,7 @@ class ObjectRestingEEGraspedEventCfg(ResetStatesBaseEventCfg):
     )
 
     reset_end_effector_pose_from_grasp_dataset = EventTerm(
-        func=task_mdp.reset_end_effector_from_grasp_dataset,
+        func=omni_reset_mdp.reset_end_effector_from_grasp_dataset,
         mode="reset",
         params={
             "base_path": f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/GraspSampling/ObjectPairs",
@@ -266,7 +266,7 @@ class ObjectRestingEEGraspedEventCfg(ResetStatesBaseEventCfg):
 @configclass
 class ObjectAnywhereEEGraspedEventCfg(ResetStatesBaseEventCfg):
     reset_insertive_object_pose = EventTerm(
-        func=task_mdp.reset_root_states_uniform,
+        func=omni_reset_mdp.reset_root_states_uniform,
         mode="reset",
         params={
             "pose_range": {
@@ -285,7 +285,7 @@ class ObjectAnywhereEEGraspedEventCfg(ResetStatesBaseEventCfg):
     )
 
     reset_end_effector_pose_from_grasp_dataset = EventTerm(
-        func=task_mdp.reset_end_effector_from_grasp_dataset,
+        func=omni_reset_mdp.reset_end_effector_from_grasp_dataset,
         mode="reset",
         params={
             "base_path": f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/GraspSampling/ObjectPairs",
@@ -309,7 +309,7 @@ class ObjectAnywhereEEGraspedEventCfg(ResetStatesBaseEventCfg):
 @configclass
 class ObjectPartiallyAssembledEEAnywhereEventCfg(ResetStatesBaseEventCfg):
     reset_insertive_object_pose_from_partial_assembly_dataset = EventTerm(
-        func=task_mdp.reset_insertive_object_from_partial_assembly_dataset,
+        func=omni_reset_mdp.reset_insertive_object_from_partial_assembly_dataset,
         mode="reset",
         params={
             "base_path": f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/PartialAssemblies/ObjectPairs",
@@ -327,7 +327,7 @@ class ObjectPartiallyAssembledEEAnywhereEventCfg(ResetStatesBaseEventCfg):
     )
 
     reset_end_effector_pose = EventTerm(
-        func=task_mdp.reset_end_effector_round_fixed_asset,
+        func=omni_reset_mdp.reset_end_effector_round_fixed_asset,
         mode="reset",
         params={
             "fixed_asset_cfg": SceneEntityCfg("robot"),
@@ -350,7 +350,7 @@ class ObjectPartiallyAssembledEEAnywhereEventCfg(ResetStatesBaseEventCfg):
 @configclass
 class ObjectPartiallyAssembledEEGraspedEventCfg(ResetStatesBaseEventCfg):
     reset_insertive_object_pose_from_partial_assembly_dataset = EventTerm(
-        func=task_mdp.reset_insertive_object_from_partial_assembly_dataset,
+        func=omni_reset_mdp.reset_insertive_object_from_partial_assembly_dataset,
         mode="reset",
         params={
             "base_path": f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/PartialAssemblies/ObjectPairs",
@@ -368,7 +368,7 @@ class ObjectPartiallyAssembledEEGraspedEventCfg(ResetStatesBaseEventCfg):
     )
 
     reset_end_effector_pose_from_grasp_dataset = EventTerm(
-        func=task_mdp.reset_end_effector_from_grasp_dataset,
+        func=omni_reset_mdp.reset_end_effector_from_grasp_dataset,
         mode="reset",
         params={
             "base_path": f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/GraspSampling/ObjectPairs",
@@ -393,32 +393,32 @@ class ObjectPartiallyAssembledEEGraspedEventCfg(ResetStatesBaseEventCfg):
 class ResetStatesTerminationCfg:
     """Configuration for reset states termination conditions."""
 
-    time_out = DoneTerm(func=task_mdp.time_out, time_out=True)
+    time_out = DoneTerm(func=omni_reset_mdp.time_out, time_out=True)
 
-    abnormal_robot = DoneTerm(func=task_mdp.abnormal_robot_state)
+    abnormal_robot = DoneTerm(func=omni_reset_mdp.abnormal_robot_state)
 
     success = DoneTerm(
-        func=task_mdp.check_reset_state_success,
+        func=omni_reset_mdp.check_reset_state_success,
         params={
             "object_cfgs": [SceneEntityCfg("insertive_object"), SceneEntityCfg("receptive_object")],
             "robot_cfg": SceneEntityCfg("robot"),
             "ee_body_name": "robotiq_base_link",
             "collision_analyzer_cfgs": [
-                task_mdp.CollisionAnalyzerCfg(
+                omni_reset_mdp.CollisionAnalyzerCfg(
                     num_points=1024,
                     max_dist=0.5,
                     min_dist=-0.0005,
                     asset_cfg=SceneEntityCfg("robot"),
                     obstacle_cfgs=[SceneEntityCfg("insertive_object")],
                 ),
-                task_mdp.CollisionAnalyzerCfg(
+                omni_reset_mdp.CollisionAnalyzerCfg(
                     num_points=1024,
                     max_dist=0.5,
                     min_dist=0.0,
                     asset_cfg=SceneEntityCfg("robot"),
                     obstacle_cfgs=[SceneEntityCfg("receptive_object")],
                 ),
-                task_mdp.CollisionAnalyzerCfg(
+                omni_reset_mdp.CollisionAnalyzerCfg(
                     num_points=1024,
                     max_dist=0.5,
                     min_dist=-0.0005,

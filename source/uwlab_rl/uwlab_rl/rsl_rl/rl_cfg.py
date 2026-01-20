@@ -54,6 +54,7 @@ class OffPolicyAlgorithmCfg:
     """The configuration for the offline behavior cloning(dagger)."""
 
 
+
 @configclass
 class RslRlFancyActorCriticCfg(RslRlPpoActorCriticCfg):
     """Configuration for the fancy actor-critic networks."""
@@ -65,6 +66,60 @@ class RslRlFancyActorCriticCfg(RslRlPpoActorCriticCfg):
     """The type of noise standard deviation for the policy. Default is scalar."""
 
 
+@configclass
+class TransformerOptimizerCfg:
+    """Configuration for the transformer optimizer."""
+    learning_rate: float = 1.0e-4
+    """The learning rate for the transformer optimizer. Default is 1.0e-4."""
+    
+    weight_decay: float = 0.00
+    """The weight decay for the transformer optimizer."""
+    
+    betas: tuple[float, float] = (0.9, 0.99)
+    """The betas for the transformer optimizer."""
+    
+    eps: float = 1.0e-8
+    """The epsilon for the transformer optimizer."""
+    
+    max_grad_norm: float = 1.0
+    """The maximum gradient norm for the transformer optimizer."""
+    
+    optimizer_class: str = "AdamW"
+    """The class name of the transformer optimizer."""
+
+@configclass
+class RslRlFancyTransformerHistoryActorCriticCfg(RslRlFancyActorCriticCfg):
+    """Configuration for actor-critic networks with transformer history."""
+    
+    embedding_dim: int = 128
+    """The embedding dimension for the transformer history actor-critic."""
+    
+    hidden_dim: int = 256
+    """The hidden dimension for the transformer history actor-critic."""
+    
+    num_layers: int = 2
+    """The number of layers for the transformer history actor-critic."""
+    
+    num_heads: int = 4
+    """The number of heads for the transformer history actor-critic."""
+    
+    dropout: float = 0.1
+    """The dropout for the transformer history actor-critic."""
+    
+    attention_dropout: float = 0.1
+    """The attention dropout for the transformer history actor-critic."""
+    
+    residual_dropout: float = 0.1
+    """The residual dropout for the transformer history actor-critic."""
+    
+    max_num_episodes: int = 1
+    """The maximum number of episodes for the transformer history actor-critic."""
+    
+    context_length_override: int | None = None
+    """The context length override for the transformer history actor-critic."""
+
+    optimizer: TransformerOptimizerCfg = TransformerOptimizerCfg()
+    """The optimizer for the transformer history actor-critic."""
 @configclass
 class RslRlFancyPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
     """Configuration for the PPO algorithm."""

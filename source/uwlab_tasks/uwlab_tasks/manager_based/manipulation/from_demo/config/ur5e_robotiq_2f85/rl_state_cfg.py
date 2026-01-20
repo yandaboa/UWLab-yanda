@@ -31,7 +31,10 @@ from uwlab_tasks.manager_based.manipulation.reset_states.config.ur5e_robotiq_2f8
     Ur5eRobotiq2f85RelativeOSCAction,
 )
 
-from ... import mdp as omni_reset_mdp
+from ....reset_states import mdp as omni_reset_mdp
+from ... import mdp as from_demo_mdp
+
+LOCAL_DATASETS_DIR = "reset_state_datasets"
 
 
 @configclass
@@ -280,6 +283,23 @@ class EvalEventCfg(BaseEventCfg):
         },
     )
 
+@configclass
+class DemoCollectEventCfg(EvalEventCfg):
+    """Configuration for demo collection events."""
+
+    resample_environment_noise = EventTerm(
+        func=from_demo_mdp.resample_environment_noise,
+        mode="reset",
+        params={},
+    )
+
+    # save the initial states and physics parameters
+    save_initial_states_and_physics = EventTerm(
+        func=from_demo_mdp.cache_state_and_physics,
+        mode="reset",
+        params={},
+    )
+
 
 @configclass
 class CommandsCfg:
@@ -359,8 +379,6 @@ class ObservationsCfg:
 
         joint_pos = ObsTerm(func=omni_reset_mdp.joint_pos)
 
-        joint_vel = ObsTerm(func=omni_reset_mdp.joint_vel)
-
         end_effector_pose = ObsTerm(
             func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
             params={
@@ -405,6 +423,7 @@ class ObservationsCfg:
         # privileged observations
         time_left = ObsTerm(func=omni_reset_mdp.time_left)
 
+        joint_vel = ObsTerm(func=omni_reset_mdp.joint_vel)
 
         end_effector_vel_lin_ang_b = ObsTerm(
             func=omni_reset_mdp.asset_link_velocity_in_root_asset_frame,
@@ -456,10 +475,60 @@ class ObservationsCfg:
             self.enable_corruption = False
             self.concatenate_terms = True
             self.history_length = 1
+    
+    class DemoCfg(ObsGroup):
+        """Observations for demo group."""
+
+        time_left = ObsTerm(func=omni_reset_mdp.time_left)
+
+        joint_pos = ObsTerm(func=omni_reset_mdp.joint_pos)
+
+        joint_vel = ObsTerm(func=omni_reset_mdp.joint_vel)
+
+
+        end_effector_pose = ObsTerm(
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
+            params={
+                "target_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+                "root_asset_cfg": SceneEntityCfg("robot"),
+                "target_asset_offset_metadata_key": "gripper_offset",
+                "root_asset_offset_metadata_key": "offset",
+                "rotation_repr": "axis_angle",
+            },
+        )
+
+        insertive_asset_pose = ObsTerm(
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
+            params={
+                "target_asset_cfg": SceneEntityCfg("insertive_object"),
+                "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+                "root_asset_offset_metadata_key": "gripper_offset",
+                "rotation_repr": "axis_angle",
+            },
+        )
+
+        receptive_asset_pose = ObsTerm(
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame,
+            params={
+                "target_asset_cfg": SceneEntityCfg("receptive_object"),
+                "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+                "rotation_repr": "axis_angle",
+            },
+        )
+
+        insertive_asset_in_receptive_asset_frame: ObsTerm = ObsTerm(
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame,
+            params={
+                "target_asset_cfg": SceneEntityCfg("insertive_object"),
+                "root_asset_cfg": SceneEntityCfg("receptive_object"),
+                "rotation_repr": "axis_angle",
+            },
+        )
 
     # observation groups
     policy: PolicyCfg = PolicyCfg()
     critic: CriticCfg = CriticCfg()
+    demo: DemoCfg = DemoCfg()
 
 
 @configclass
@@ -689,7 +758,6 @@ class Ur5eRobotiq2f85RelCartesianOSCEvalCfg(Ur5eRobotiq2f85RlStateCfg):
             },
         )
 
-
 @configclass
 class Ur5eRobotiq2f85RelJointPosEvalCfg(Ur5eRobotiq2f85RlStateCfg):
     """Evaluation configuration for Relative Joint Position action space."""
@@ -712,3 +780,26 @@ class Ur5eRobotiq2f85RelJointPosEvalCfg(Ur5eRobotiq2f85RlStateCfg):
                 "distribution": "log_uniform",
             },
         )
+
+@configclass
+class Ur5eRobotiq2f85RelJointPosDemoCollectCfg(Ur5eRobotiq2f85RelJointPosEvalCfg):
+    """Demo collection configuration for Relative Joint Position action space."""
+
+    events: DemoCollectEventCfg = DemoCollectEventCfg()
+    actions: Ur5eRobotiq2f85RelativeJointPositionAction = Ur5eRobotiq2f85RelativeJointPositionAction()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.robot = IMPLICIT_UR5E_ROBOTIQ_2F85.replace(prim_path="{ENV_REGEX_NS}/Robot")
+
+        # self.events.randomize_robot_actuator_parameters = EventTerm(
+        #     func=omni_reset_mdp.randomize_actuator_gains,
+        #     mode="reset",
+        #     params={
+        #         "asset_cfg": SceneEntityCfg("robot", joint_names=["shoulder.*", "elbow.*", "wrist.*", "finger_joint"]),
+        #         "stiffness_distribution_params": (0.5, 2.0),
+        #         "damping_distribution_params": (0.5, 2.0),
+        #         "operation": "scale",
+        #         "distribution": "log_uniform",
+        #     },
+        # )

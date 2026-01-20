@@ -21,6 +21,7 @@ def target_asset_pose_in_root_asset_frame(
     target_asset_offset=None,
     root_asset_offset=None,
     rotation_repr: str = "quat",
+    ood_offset: float = 0.0, # what offset to add to observation term to take us OOD. This is useful for OOD evaluation and training an expert for OOD
 ):
     target_asset: RigidObject | Articulation = env.scene[target_asset_cfg.name]
     root_asset: RigidObject | Articulation = env.scene[root_asset_cfg.name]
@@ -29,6 +30,7 @@ def target_asset_pose_in_root_asset_frame(
     root_body_idx = 0 if isinstance(root_asset_cfg.body_ids, slice) else root_asset_cfg.body_ids
 
     target_pos = target_asset.data.body_link_pos_w[:, target_body_idx].view(-1, 3)
+    target_pos[:, 0] += ood_offset
     target_quat = target_asset.data.body_link_quat_w[:, target_body_idx].view(-1, 4)
     root_pos = root_asset.data.body_link_pos_w[:, root_body_idx].view(-1, 3)
     root_quat = root_asset.data.body_link_quat_w[:, root_body_idx].view(-1, 4)
