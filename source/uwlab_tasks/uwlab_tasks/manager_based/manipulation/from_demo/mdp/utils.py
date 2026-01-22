@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping, cast
 
 import torch
 
@@ -10,7 +10,11 @@ from isaaclab.managers import SceneEntityCfg
 
 __all__ = [
     "apply_physics_for_envs",
+    "collect_episode_metrics",
     "collect_physics_for_envs",
+    "extract_action_shape",
+    "extract_obs_shape",
+    "find_success_term_name",
     "grab_envs_from_state_dict",
     "update_state_dict",
 ]
@@ -43,7 +47,8 @@ def update_state_dict(state_dict: dict[str, Any], new_state_dict: dict[str, Any]
 def _get_physics_randomized_assets(env: ManagerBasedEnv) -> list[tuple[str, RigidObject | Articulation, str]]:
     assets: list[tuple[str, RigidObject | Articulation, str]] = []
     seen: set[str] = set()
-    term_names = env.event_manager.active_terms.get("new_history_physics", [])
+    term_names = env.event_manager.active_terms.get("reset", [])
+    term_names.extend(env.event_manager.active_terms.get("startup", []))
     for term_name in term_names:
         term_cfg = getattr(env.event_manager.cfg, term_name)
         asset_cfg: SceneEntityCfg | None = term_cfg.params.get("asset_cfg")
@@ -86,37 +91,85 @@ def collect_physics_for_envs(env: ManagerBasedEnv, env_ids: torch.Tensor) -> dic
     return physics
 
 
+def find_success_term_name(env: ManagerBasedEnv) -> str | None:
+    if not hasattr(env, "termination_manager"):
+        return None
+    for term_name in env.termination_manager.active_terms:
+        if "success" in term_name.lower():
+            return term_name
+    return None
+
+
+def collect_episode_metrics(
+    rollouts: Mapping[str, Any],
+    done_env_ids: torch.Tensor,
+    env: ManagerBasedEnv,
+    success_term_name: str | None,
+) -> tuple[list[float], list[float] | None]:
+    rewards = cast(torch.Tensor, rollouts["rewards"])
+    episode_returns = rewards.sum(dim=1).detach().cpu().tolist()
+    episode_success = None
+    if success_term_name is not None and hasattr(env, "termination_manager"):
+        success_values = env.termination_manager.get_term(success_term_name)
+        episode_success = success_values[done_env_ids].detach().float().cpu().tolist()
+    return episode_returns, episode_success
+
+
+def extract_obs_shape(
+    demo_obs: torch.Tensor | Mapping[str, torch.Tensor], debug_obs: torch.Tensor | None
+) -> tuple[int, ...] | dict[str, tuple[int, ...]]:
+    if isinstance(demo_obs, Mapping):
+        obs_shape = {key: value.shape[1:] for key, value in demo_obs.items()}
+        if debug_obs is not None:
+            obs_shape["debug"] = debug_obs.shape[1:]
+        return obs_shape
+    if debug_obs is None:
+        return demo_obs.shape[1:]
+    return {"demo": demo_obs.shape[1:], "debug": debug_obs.shape[1:]}
+
+
+def extract_action_shape(action_space: Any) -> tuple[int, ...]:
+    action_shape = getattr(action_space, "shape", None)
+    if action_shape is None:
+        discrete_n = getattr(action_space, "n", None)
+        if discrete_n is not None:
+            return (int(discrete_n),)
+        raise ValueError("Action space has no shape or discrete size.")
+    return action_shape
+
+
 def _apply_asset_physics(asset: RigidObject | Articulation, env_ids: torch.Tensor, buf: dict[str, Any]) -> None:
     physx_device = "cpu"
     isaaclab_device = asset.device
     env_ids_cpu = env_ids.cpu() if isinstance(env_ids, torch.Tensor) else env_ids
-    env_ids_index = env_ids_cpu.tolist() if isinstance(env_ids_cpu, torch.Tensor) else env_ids_cpu
+    env_ids_gpu = env_ids.to(torch.device("cuda")) if isinstance(env_ids, torch.Tensor) else env_ids
+    # env_ids_index = env_ids_cpu if isinstance(env_ids_cpu, torch.Tensor) else env_ids_cpu
     if "mass" in buf:
         masses = buf["mass"].to(physx_device)
-        asset.root_physx_view.set_masses(masses, env_ids_index)
+        asset.root_physx_view.set_masses(masses, env_ids_cpu)
     if "materials" in buf:
         materials = buf["materials"].to(physx_device)
-        asset.root_physx_view.set_material_properties(materials, env_ids_index)
+        asset.root_physx_view.set_material_properties(materials, env_ids_cpu)
     if isinstance(asset, Articulation):
         joint = buf.get("joint")
         if isinstance(joint, dict):
             if "friction" in joint:
                 asset.write_joint_friction_coefficient_to_sim(
-                    joint["friction"].to(isaaclab_device), joint_ids=slice(None), env_ids=env_ids_index
+                    joint["friction"].to(isaaclab_device)[env_ids_gpu], joint_ids=slice(None), env_ids=env_ids_gpu
                 )
             if "armature" in joint:
                 asset.write_joint_armature_to_sim(
-                    joint["armature"].to(isaaclab_device), joint_ids=slice(None), env_ids=env_ids_index
+                    joint["armature"].to(isaaclab_device)[env_ids_gpu], joint_ids=slice(None), env_ids=env_ids_gpu
                 )
         actuator = buf.get("actuator")
         if isinstance(actuator, dict):
             if "stiffness" in actuator:
                 asset.write_joint_stiffness_to_sim(
-                    actuator["stiffness"].to(isaaclab_device), joint_ids=slice(None), env_ids=env_ids_index
+                    actuator["stiffness"].to(isaaclab_device)[env_ids_gpu], joint_ids=slice(None), env_ids=env_ids_gpu
                 )
             if "damping" in actuator:
                 asset.write_joint_damping_to_sim(
-                    actuator["damping"].to(isaaclab_device), joint_ids=slice(None), env_ids=env_ids_index
+                    actuator["damping"].to(isaaclab_device)[env_ids_gpu], joint_ids=slice(None), env_ids=env_ids_gpu
                 )
 
 

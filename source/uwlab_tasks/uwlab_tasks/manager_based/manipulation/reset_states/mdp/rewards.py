@@ -171,13 +171,32 @@ def dense_success_reward(env: ManagerBasedRLEnv, std: float, context: str = "pro
     stacked = torch.stack([angle_diff, xyz_distance], dim=0)
     return torch.mean(stacked, dim=0)
 
-
-def success_reward(env: ManagerBasedRLEnv, context: str = "progress_context") -> torch.Tensor:
+def calculate_successes(env: ManagerBasedRLEnv, context: str = "progress_context") -> torch.Tensor:
+    if getattr(env, "first_success", None) is None:
+        env.first_success = torch.zeros((env.num_envs), dtype=torch.int32, device=env.device) - 1
+    previous_env_success_mask = env.first_success >= env.episode_length_buf
+    env.first_success[previous_env_success_mask] = -1
+    
     context_term: ManagerTermBase = env.reward_manager.get_term_cfg(context).func  # type: ignore
     orientation_aligned: torch.Tensor = getattr(context_term, "orientation_aligned")
     position_aligned: torch.Tensor = getattr(context_term, "position_aligned")
-    return torch.where(orientation_aligned & position_aligned, 1.0, 0.0)
+    successes = torch.where(orientation_aligned & position_aligned, 1.0, 0.0)
+    success_mask = successes.to(dtype=torch.bool)
 
+    replace_first_success = torch.logical_and(success_mask, env.first_success == -1)
+    env.first_success[replace_first_success] = env.episode_length_buf[replace_first_success]
+    return successes
+
+def success_reward(env: ManagerBasedRLEnv, context: str = "progress_context") -> torch.Tensor:
+    # also tracks the first time we succeed. A bit of a hack, but it helps us tell when we should terminate
+    return calculate_successes(env, context)
+
+# only terminate if we have succeeded and x delay steps have passed since last success
+def terminate_on_success(env: ManagerBasedRLEnv, delay_steps: int = 0) -> torch.Tensor:
+    if getattr(env, "first_success", None) is None:
+        return torch.zeros((env.num_envs), dtype=torch.bool, device=env.device)
+    succeeded_and_delayed = torch.logical_and(env.first_success != -1, env.episode_length_buf - env.first_success >= delay_steps)
+    return succeeded_and_delayed
 
 def action_l2_clamped(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Penalize the actions using L2 squared kernel."""

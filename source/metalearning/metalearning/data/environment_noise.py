@@ -50,7 +50,8 @@ class EnvironmentNoise:
         noised_env_mask = torch.rand_like(self.noise_prob) < self.noise_prob
         if noised_env_mask.any():
             noise_samples = self.noise_magnitude_distribution.sample(noise[noised_env_mask].shape).to(self.device)
-            noise[noised_env_mask] = noise_samples
+            negative_or_positive_samples = torch.randint_like(noise_samples, 2) * 2 - 1
+            noise[noised_env_mask] = noise_samples * negative_or_positive_samples
             # Advanced indexing: collect per-env magnitudes from masked actions.
             per_env_magnitude = noise_samples.reshape(noise_samples.shape[0], -1).abs().mean(dim=1)
             self._noise_magnitude_history.extend(per_env_magnitude.detach().cpu().tolist())

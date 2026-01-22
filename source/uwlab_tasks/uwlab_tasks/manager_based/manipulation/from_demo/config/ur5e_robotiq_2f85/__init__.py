@@ -12,10 +12,20 @@ from . import agents
 # Register the demo collect environment
 gym.register(
     id="OmniFromDemo-UR5eRobotiq2f85-CollectDemos-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="uwlab_tasks.manager_based.manipulation.from_demo.env:FromDemoEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.rl_state_cfg:Ur5eRobotiq2f85RelJointPosDemoCollectCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.collect_demos_cfg:CollectDemosPolicyRunnerCfg",
+    },
+)
+
+gym.register(
+    id="OmniFromDemo-UR5eRobotiq2f85-Train-v0",
+    entry_point="uwlab_tasks.manager_based.manipulation.from_demo.env:FromDemoEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.rl_state_cfg:Ur5eRobotiq2f85RelJointPosFromDemoTrainCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:PPOWithContextRunnerCfg",
     },
 )

@@ -103,7 +103,7 @@ class RslRlFancyTransformerHistoryActorCriticCfg(RslRlFancyActorCriticCfg):
     num_heads: int = 4
     """The number of heads for the transformer history actor-critic."""
     
-    dropout: float = 0.1
+    embedding_dropout: float = 0.1
     """The dropout for the transformer history actor-critic."""
     
     attention_dropout: float = 0.1

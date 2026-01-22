@@ -88,6 +88,14 @@ class WandbNoiseLogger:
         self._run.finish()
         self._run = None
 
+    @property
+    def run(self):
+        return self._run
+
+    @property
+    def wandb(self):
+        return self._wandb
+
     def _resolve_names(
         self,
         agent_cfg: Mapping[str, Any] | Any,
@@ -123,3 +131,88 @@ class WandbNoiseLogger:
         ax.legend(loc="best")
         fig.tight_layout()
         return fig
+
+
+class WandbEpisodeLogger:
+    """Wandb logger for episodic success and return statistics."""
+
+    def __init__(
+        self,
+        enable: bool,
+        agent_cfg: Mapping[str, Any] | Any,
+        log_dir: str,
+        task_name: str,
+        log_interval: int = 100,
+        project_name: str | None = None,
+        run_name: str | None = None,
+        run=None,
+        wandb_module=None,
+    ) -> None:
+        self._log_interval = log_interval
+        self._wandb = wandb_module
+        self._run = run
+        self._episode_returns: list[float] = []
+        self._episode_success: list[float] = []
+        self._track_success = False
+        if not enable:
+            return
+        if self._run is not None:
+            return
+        try:
+            import wandb  # type: ignore
+        except ImportError:
+            print("[INFO] Wandb requested but not installed.")
+            return
+        self._wandb = wandb
+        project, run = self._resolve_names(agent_cfg, project_name, run_name)
+        self._run = wandb.init(project=project, name=run, dir=log_dir, config={"task": task_name})
+
+    def log(self, episode_returns: Sequence[float], episode_success: Sequence[float] | None, step: int) -> None:
+        """Log episodic statistics when due."""
+        if self._run is None:
+            return
+        if episode_returns:
+            self._episode_returns.extend(float(value) for value in episode_returns)
+        if episode_success is not None:
+            self._track_success = True
+            self._episode_success.extend(float(value) for value in episode_success)
+        self._flush_batches(step)
+
+    def flush(self, step: int) -> None:
+        """Log any remaining episodic statistics."""
+        if self._run is None:
+            return
+        if not self._episode_returns:
+            return
+        self._log_batch(step, len(self._episode_returns))
+
+    def _flush_batches(self, step: int) -> None:
+        while len(self._episode_returns) >= self._log_interval:
+            self._log_batch(step, self._log_interval)
+
+    def _log_batch(self, step: int, batch_size: int) -> None:
+        if self._run is None:
+            return
+        run = self._run
+        returns = self._episode_returns[:batch_size]
+        del self._episode_returns[:batch_size]
+        log_payload = {"episode/avg_total_return": float(np.mean(returns))}
+        if self._track_success and len(self._episode_success) >= batch_size:
+            successes = self._episode_success[:batch_size]
+            del self._episode_success[:batch_size]
+            log_payload["episode/task_success_rate"] = float(np.mean(successes))
+        run.log(log_payload, step=step)
+
+    def _resolve_names(
+        self,
+        agent_cfg: Mapping[str, Any] | Any,
+        project_name: str | None,
+        run_name: str | None,
+    ) -> tuple[str | None, str | None]:
+        if isinstance(agent_cfg, Mapping):
+            project = project_name or agent_cfg.get("wandb_project") or agent_cfg.get("experiment_name")
+            run = run_name or agent_cfg.get("run_name")
+            return project, run
+        project = project_name or getattr(agent_cfg, "wandb_project", None) or getattr(agent_cfg, "experiment_name", None)
+        run = run_name or getattr(agent_cfg, "run_name", None)
+        return project, run

@@ -51,14 +51,22 @@ class RolloutStorage:
         if isinstance(obs, Mapping):
             for key, value in obs.items():
                 if key not in self.obs_buffers:
-                    raise KeyError(f"Observation key '{key}' not in buffers.")
+                    self.obs_buffers[key] = torch.zeros(
+                        (self.num_envs, self.max_steps, *value.shape[1:]),
+                        dtype=value.dtype,
+                        device=self.device,
+                    )
                 # Advanced indexing to write per-env per-step obs.
                 self.obs_buffers[key][env_ids_tensor, step_idx] = value
         else:
             if "_obs" not in self.obs_buffers:
-                raise KeyError("Observation buffer not initialized for tensor obs.")
-            # Advanced indexing to write per-env per-step obs.
-            self.obs_buffers["_obs"][env_ids_tensor, step_idx] = obs
+                if "demo" not in self.obs_buffers:
+                    raise KeyError("Observation buffer not initialized for tensor obs.")
+                # Advanced indexing to write per-env per-step demo obs.
+                self.obs_buffers["demo"][env_ids_tensor, step_idx] = obs
+            else:
+                # Advanced indexing to write per-env per-step obs.
+                self.obs_buffers["_obs"][env_ids_tensor, step_idx] = obs
 
         # Advanced indexing to write per-env per-step data.
         self.action_buffer[env_ids_tensor, step_idx] = actions

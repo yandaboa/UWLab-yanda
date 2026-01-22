@@ -84,6 +84,12 @@ class EpisodeStorage:
         self.episodes = []
         self.save_index += 1
         return save_path
+    
+    def force_save(self) -> None:
+        """Force save current episodes to disk and clear the buffer."""
+        if self.save_dir is None:
+            raise RuntimeError("save_dir must be set to flush episodes.")
+        self.save(self.save_dir)
 
     def _normalize_env_ids(
         self, env_ids: Optional[Iterable[int] | torch.Tensor], num_episodes: int

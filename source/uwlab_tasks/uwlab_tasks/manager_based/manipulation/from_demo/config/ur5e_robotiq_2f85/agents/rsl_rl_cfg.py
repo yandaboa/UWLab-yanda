@@ -14,13 +14,15 @@ def my_experts_observation_func(env):
 
 
 @configclass
-class Base_PPORunnerCfg(RslRlOnPolicyRunnerCfg):
+class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 32
     max_iterations = 10000
     save_interval = 100
     resume = False
     experiment_name = "ur5e_robotiq_2f85_from_demo"
+    logger = "wandb"
     policy = RslRlFancyTransformerHistoryActorCriticCfg(
+        class_name="LongContextActorCritic",
         init_noise_std=1.0,
         actor_obs_normalization=True,
         critic_obs_normalization=True,
@@ -34,11 +36,11 @@ class Base_PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         hidden_dim=256,
         num_layers=2,
         num_heads=4,
-        dropout=0.1,
+        embedding_dropout=0.1,
         attention_dropout=0.1,
         residual_dropout=0.1,
-        max_num_episodes=1,
-        context_length_override=None,
+        max_num_episodes=1, # not actually implemented yet lol
+        context_length_override=None, # i dont think this does anything either
         optimizer=TransformerOptimizerCfg(
             learning_rate=1.0e-4,
             weight_decay=0.00,
@@ -49,6 +51,7 @@ class Base_PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         ),
     )
     algorithm = RslRlPpoAlgorithmCfg(
+        class_name="PPOWithLongContext",
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         normalize_advantage_per_mini_batch=False,

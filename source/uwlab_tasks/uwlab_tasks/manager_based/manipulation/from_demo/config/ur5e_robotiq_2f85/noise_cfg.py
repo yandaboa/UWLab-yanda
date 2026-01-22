@@ -8,5 +8,9 @@ class EnvironmentNoiseCfg:
     noise_magnitude_distribution: str = "normal"
     mean_noise_frequency: float = 0.5
     std_noise_frequency: float = 0.25
-    mean_noise_magnitude: float = 1.0
-    std_noise_magnitude: float = 0.5
+    mean_noise_magnitude: float = 0.0
+    std_noise_magnitude: float = 2.0
+    max_noise_frequency: float = 0.5
+    min_noise_frequency: float = 0.0
+    max_noise_magnitude: float = 0.75
+    min_noise_magnitude: float = 0.0

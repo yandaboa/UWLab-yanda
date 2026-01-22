@@ -82,6 +82,13 @@ import torch
 from datetime import datetime
 
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
+from uwlab_rl.rsl_rl.transformer_ppo import PPOWithLongContext
+from uwlab_rl.rsl_rl.long_context_ac import LongContextActorCritic
+
+import importlib
+runner_mod = importlib.import_module("rsl_rl.runners.on_policy_runner")
+runner_mod.LongContextActorCritic = LongContextActorCritic # type: ignore
+runner_mod.PPOWithLongContext = PPOWithLongContext # type: ignore
 
 from isaaclab.envs import (
     DirectMARLEnv,

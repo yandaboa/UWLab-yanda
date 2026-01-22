@@ -14,12 +14,13 @@ class Base_CollectDemosPolicyRunnerCfg(RslRlOnPolicyRunnerCfg):
     noise: EnvironmentNoiseCfg = EnvironmentNoiseCfg()
 
 @configclass
-class CollectDemosPolicyRunnerCfg(Base_CollectDemosPolicyRunnerCfg):
+class CollectDemosPolicyRunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 32
     max_iterations = 40000
     save_interval = 100
     resume = False
     experiment_name = "ur5e_robotiq_2f85_from_demo_collect_demos"
+    logger = "wandb"
     policy = RslRlFancyActorCriticCfg(
         init_noise_std=1.0,
         actor_obs_normalization=True,
@@ -45,7 +46,13 @@ class CollectDemosPolicyRunnerCfg(Base_CollectDemosPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
-    noise = EnvironmentNoiseCfg(
-        noise_frequency_distribution="normal",
-        noise_magnitude_distribution="normal",
+    noise: EnvironmentNoiseCfg = EnvironmentNoiseCfg(
+        noise_frequency_distribution="uniform",
+        noise_magnitude_distribution="uniform",
+        max_noise_frequency = 1.0,
+        min_noise_frequency = 0.0,
+        mean_noise_magnitude = 0.0,
+        std_noise_magnitude = 4.0,
+        min_noise_magnitude = 8.0,
+        max_noise_magnitude = 16.0,
     )
