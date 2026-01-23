@@ -225,7 +225,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dt = env.unwrapped.step_dt
 
     # reset environment
-    policy_obs = env.get_observations()
+    previous_obs = env.get_observations()
+    # previous_obs, _ = env.reset() I think env creation implicitly resets it?
     obs_buf = env.unwrapped.obs_buf
     demo_obs = obs_buf["demo"]
     debug_obs = obs_buf.get("debug") if isinstance(obs_buf, dict) else None
@@ -259,13 +260,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
-            actions = policy(policy_obs)
+            actions = policy(previous_obs)
             if environment_noise is not None:
                 actions = environment_noise.step_action(actions)
             # env stepping
             obs, rewards, dones, extras = env.step(actions)
-            demo_obs = obs["demo"]
-            debug_obs = obs.get("debug") if isinstance(obs, dict) else None
+            demo_obs = previous_obs["demo"]
+            debug_obs = previous_obs.get("debug") if isinstance(previous_obs, dict) else None
             if debug_obs is None:
                 rollout_obs = demo_obs
             elif isinstance(demo_obs, dict):
@@ -299,7 +300,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 elif episode_storage.total_episodes >= args_cli.num_demos:
                     episode_storage.force_save()
                     all_demos_collected = True
-            policy_obs = obs
+            previous_obs = obs
         if environment_noise is not None:
             noise_logger.log(environment_noise, global_step)
         global_step += 1

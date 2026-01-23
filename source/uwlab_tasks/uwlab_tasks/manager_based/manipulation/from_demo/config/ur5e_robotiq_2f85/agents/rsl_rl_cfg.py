@@ -15,7 +15,7 @@ def my_experts_observation_func(env):
 
 @configclass
 class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 32
+    num_steps_per_env = 16
     max_iterations = 10000
     save_interval = 100
     resume = False

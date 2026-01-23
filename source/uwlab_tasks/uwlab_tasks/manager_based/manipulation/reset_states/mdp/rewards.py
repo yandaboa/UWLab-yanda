@@ -173,7 +173,7 @@ def dense_success_reward(env: ManagerBasedRLEnv, std: float, context: str = "pro
 
 def calculate_successes(env: ManagerBasedRLEnv, context: str = "progress_context") -> torch.Tensor:
     if getattr(env, "first_success", None) is None:
-        env.first_success = torch.zeros((env.num_envs), dtype=torch.int32, device=env.device) - 1
+        env.first_success = torch.zeros((env.num_envs), dtype=torch.int64, device=env.device) - 1
     previous_env_success_mask = env.first_success >= env.episode_length_buf
     env.first_success[previous_env_success_mask] = -1
     

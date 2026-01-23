@@ -5,7 +5,7 @@ from typing import Any, Callable, Iterable
 import torch.optim as optim
 
 from rsl_rl.algorithms.ppo import PPO
-
+from tensordict import TensorDict
 
 class CompositeOptimizer:
     """Proxy optimizer that forwards to policy and encoder optimizers."""

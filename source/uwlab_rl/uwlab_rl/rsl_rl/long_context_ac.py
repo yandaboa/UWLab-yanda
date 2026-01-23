@@ -81,21 +81,57 @@ class LongContextActorCritic(ActorCritic):
 
         if self.context_keys and isinstance(self.context_keys, str) and self.context_keys in obs:
             self._ensure_context_encoder(obs)
+
+    """ 
+    This function can be called with obs[self.context_keys] as a TensorDict or as a concatenated tensor 
+    We want to handle both cases and return the demo_obs, demo_actions, demo_rewards, demo_lengths
+    demo_obs is a tensor of shape (num_envs, max_length, num_obs)
+    demo_actions is a tensor of shape (num_envs, max_length, num_actions)
+    demo_rewards is a tensor of shape (num_envs, max_length, num_rewards)
+    demo_lengths is a tensor of shape (num_envs)
+
+    IMPORTANT: Obs will be altered in-place (if necessary) so that PPO will recognize the full context_obs
+    this means it will be a concatenated tensor of shape (num_envs, max_length, num_obs + num_actions + num_rewards)
+    we also need to add a length field to the obs tensor to indicate the length of the context
+    """
+    
+    def _process_context_obs(self, obs: Any) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        context_obs = obs[self.context_keys]
+        if isinstance(context_obs, TensorDict):
+            demo_obs = context_obs["context_obs"]
+            demo_actions = context_obs["context_actions"]
+            demo_rewards = context_obs["context_rewards"]
+            demo_lengths = context_obs["context_lengths"]
+            max_length = demo_lengths.max()
+            demo_obs = demo_obs.reshape(demo_obs.shape[0], max_length, -1)
+            demo_actions = demo_actions.reshape(demo_actions.shape[0], max_length, -1)
+            demo_rewards = demo_rewards.reshape(demo_rewards.shape[0], max_length, -1)
+            obs[self.context_keys] = torch.cat([demo_obs, demo_actions, demo_rewards], dim=-1)
+            obs["context_lengths"] = demo_lengths
+        else:
+            start_idx = 0
+            demo_obs = context_obs[..., start_idx:start_idx + self.num_obs]
+            start_idx += self.num_obs
+            demo_actions = context_obs[..., start_idx:start_idx + self.num_actions]
+            start_idx += self.num_actions
+            demo_rewards = context_obs[..., start_idx:start_idx + self.num_rewards]
+            
+            demo_lengths = obs["context_lengths"]
+        
+        demo_lengths = demo_lengths.to(dtype=torch.int32)
+        return demo_obs, demo_actions, demo_rewards, demo_lengths
     
     def _ensure_context_encoder(self, obs: TensorDict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        context_obs = obs[self.context_keys]
-        demo_obs = context_obs["context_obs"]
-        demo_actions = context_obs["context_actions"]
-        demo_rewards = context_obs["context_rewards"]
-        demo_lengths = context_obs["context_lengths"]
-        max_length = demo_lengths.max()
-        demo_obs = demo_obs.reshape(demo_obs.shape[0], max_length, -1)
-        demo_actions = demo_actions.reshape(demo_actions.shape[0], max_length, -1)
-        demo_rewards = demo_rewards.reshape(demo_rewards.shape[0], max_length, -1)
-        num_obs = demo_obs.shape[-1]
+        demo_obs, demo_actions, demo_rewards, demo_lengths = self._process_context_obs(obs)
+
+        max_length = int(demo_lengths.max().item())
+        num_envs = demo_obs.shape[0]
+        
+        self.num_obs = demo_obs.shape[-1]
         num_actions = demo_actions.shape[-1]
         assert num_actions == self.num_actions, "Number of actions must match, or you've shifted action spaces??"
-        num_rewards = demo_rewards.shape[-1]
+        self.num_rewards = demo_rewards.shape[-1]
+
         if self.context_encoder is None:
             num_actor_obs = 0
             for obs_group in self.obs_groups["policy"]:
@@ -103,9 +139,9 @@ class LongContextActorCritic(ActorCritic):
                 num_actor_obs += obs[obs_group].shape[-1]
 
             self.context_encoder = EpisodeEncoder(
-                state_dim=num_obs,
-                action_dim=num_actions,
-                reward_dim=num_rewards,
+                state_dim=self.num_obs,
+                action_dim=self.num_actions,
+                reward_dim=self.num_rewards,
                 **self.transformer_args,
             )
             policy_input_size = num_actor_obs + self.context_encoder.hidden_dim
@@ -117,7 +153,10 @@ class LongContextActorCritic(ActorCritic):
                 self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs + self.context_encoder.hidden_dim)
             else:
                 self.actor_obs_normalizer = torch.nn.Identity()
-        
+
+            # set up buffers to cache output of transformer hidden states
+            # self.hidden_states_cache = torch.zeros(num_envs, max_length, self.context_encoder.hidden_dim)
+
         return demo_obs, demo_actions, demo_rewards, demo_lengths
 
     def get_context_obs(self, obs: TensorDict) -> Optional[torch.Tensor]:
@@ -130,7 +169,12 @@ class LongContextActorCritic(ActorCritic):
         assert hidden_states.shape[0] == demo_obs.shape[0], "Number of environments must match"
         assert hidden_states.shape[1] == demo_lengths.max(), "Number of timesteps must match"
         assert len(hidden_states.shape) == 3, "Hidden states must be a 3D tensor"
-        return hidden_states[torch.arange(demo_obs.shape[0]), demo_lengths.squeeze(-1) - 1, :]
+        hidden_states = hidden_states[torch.arange(demo_obs.shape[0]), demo_lengths.squeeze(-1).to(dtype=torch.int32) - 1, :]
+        assert len(hidden_states.shape) == 2 and hidden_states.shape[1] == self.context_encoder.hidden_dim, "Hidden states must be a 2D tensor of shape (num_envs, hidden_dim)"
+
+        # TODO: include a caching to make stepping through environment faster?
+        # need a flag for whether we're updating or running inference
+        return hidden_states
 
     def _merge_obs_with_context(
         self,

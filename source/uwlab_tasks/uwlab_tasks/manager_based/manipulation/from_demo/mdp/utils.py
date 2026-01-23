@@ -72,6 +72,10 @@ def _collect_asset_physics(asset: RigidObject | Articulation) -> dict[str, Any]:
     if isinstance(asset, Articulation):
         joint: dict[str, torch.Tensor] = {}
         joint["friction"] = asset.root_physx_view.get_dof_friction_coefficients().to(asset.device).clone()
+        # friction_props = asset.root_physx_view.get_dof_friction_properties()
+        # # static friction is in slot 0 for Isaac Sim >= 5
+        # friction = friction_props[..., 0] if friction_props.ndim == 3 else friction_props
+        # joint["friction"] = friction.to(asset.device).clone()
         joint["armature"] = asset.root_physx_view.get_dof_armatures().to(asset.device).clone()
         buf["joint"] = joint
         actuator: dict[str, torch.Tensor] = {}

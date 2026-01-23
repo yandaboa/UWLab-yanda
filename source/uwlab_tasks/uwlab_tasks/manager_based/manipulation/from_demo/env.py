@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Iterable
 
 import torch
@@ -49,9 +50,18 @@ class DemoTrackingContext:
             raise ValueError("DemoTrackingContext found no episodes to load.")
         self.episode_indices = torch.full((resolved_num_envs,), -1, device=resolved_device, dtype=torch.long)
         device = torch.device(resolved_device)
-        self.demo_obs_max_len, self.demo_obs_shapes = _infer_demo_obs_spec(self.episodes)
-        self.demo_obs: Any = _allocate_demo_obs_buffer(
-            resolved_num_envs, self.demo_obs_max_len, self.demo_obs_shapes, device
+        (
+            self.demo_obs_max_len,
+            self.demo_obs_shapes,
+            self.demo_obs_term_order,
+            self.demo_obs_concat_dim,
+        ) = _infer_demo_obs_spec(self.episodes)
+        self.demo_obs, self.demo_obs_dict = _allocate_demo_obs_buffers(
+            resolved_num_envs,
+            self.demo_obs_max_len,
+            self.demo_obs_shapes,
+            self.demo_obs_concat_dim,
+            device,
         )
         self.demo_obs_lengths = torch.zeros((resolved_num_envs,), dtype=torch.int32, device=device)
         self.demo_action_shape = _infer_sequence_shape(self.episodes, "actions")
@@ -73,13 +83,14 @@ class DemoTrackingContext:
             env_ids = torch.arange(self._env.num_envs, device=self._env.device)
         if env_ids.numel() == 0:
             return
-        episode_indices = torch.randint(0, len(self.episodes), (env_ids.numel(),), device=self._env.device)
+        episode_indices = torch.randperm(len(self.episodes), device=self._env.device)[:env_ids.numel()]
         self.episode_indices[env_ids] = episode_indices
         selected = [self.episodes[idx] for idx in episode_indices.tolist()]
-        padded_obs, lengths = _pad_demo_obs_batch(
+        padded_obs, padded_obs_dict, lengths = _pad_demo_obs_batch(
             [episode["obs"] for episode in selected],
             self.demo_obs_max_len,
             self.demo_obs_shapes,
+            self.demo_obs_term_order,
             torch.device(self._env.device),
         )
         padded_actions = _pad_sequence_batch(
@@ -104,20 +115,23 @@ class DemoTrackingContext:
             physics, self._env.num_envs, env_ids, self._physics_zero_cache
         )
         env_ids_index = env_ids.tolist()
-        self._assign_demo_obs(env_ids_index, padded_obs, lengths)
+        self._assign_demo_obs(env_ids_index, padded_obs, padded_obs_dict, lengths)
         self.demo_actions[env_ids_index] = padded_actions
         self.demo_rewards[env_ids_index] = padded_rewards
         self._env.scene.reset_to(states, env_ids=env_ids, is_relative=True) # type: ignore[arg-type]
         utils.apply_physics_for_envs(self._env, env_ids, physics)
 
     def _assign_demo_obs(
-        self, env_ids: list[int], padded_obs: torch.Tensor | dict[str, torch.Tensor], lengths: torch.Tensor
+        self,
+        env_ids: list[int],
+        padded_obs: torch.Tensor,
+        padded_obs_dict: dict[str, torch.Tensor] | None,
+        lengths: torch.Tensor,
     ) -> None:
-        if isinstance(padded_obs, dict):
-            for key, value in padded_obs.items():
-                self.demo_obs[key][env_ids] = value
-        else:
-            self.demo_obs[env_ids] = padded_obs
+        self.demo_obs[env_ids] = padded_obs
+        if padded_obs_dict is not None and self.demo_obs_dict is not None:
+            for key, value in padded_obs_dict.items():
+                self.demo_obs_dict[key][env_ids] = value
         self.demo_obs_lengths[env_ids] = lengths
 
 
@@ -213,14 +227,20 @@ def _expand_physics_for_envs(
     return physics
 
 
-def _infer_demo_obs_spec(episodes: list[dict[str, Any]]) -> tuple[int, dict[str, tuple[int, ...]] | tuple[int, ...]]:
+def _infer_demo_obs_spec(
+    episodes: list[dict[str, Any]],
+) -> tuple[int, dict[str, tuple[int, ...]] | tuple[int, ...], list[str] | None, int]:
     first_obs = episodes[0].get("obs")
     if isinstance(first_obs, dict):
+        term_order = list(first_obs.keys())
         obs_shapes: dict[str, tuple[int, ...]] | tuple[int, ...] = {
             key: tuple(value.shape[1:]) for key, value in first_obs.items()
         }
+        concat_dim = int(sum(math.prod(shape) for shape in obs_shapes.values()))
     elif isinstance(first_obs, torch.Tensor):
+        term_order = None
         obs_shapes = tuple(first_obs.shape[1:])
+        concat_dim = int(math.prod(obs_shapes))
     else:
         raise TypeError(f"Unsupported obs type: {type(first_obs)}")
     max_len = 0
@@ -228,6 +248,8 @@ def _infer_demo_obs_spec(episodes: list[dict[str, Any]]) -> tuple[int, dict[str,
         obs = episode.get("obs")
         if isinstance(obs, dict):
             length = int(next(iter(obs.values())).shape[0])
+            if not set(obs.keys()) == set(term_order or []):
+                raise ValueError("Episode obs keys must match across datasets.")
             if obs_shapes != {key: tuple(value.shape[1:]) for key, value in obs.items()}:
                 raise ValueError("Episode obs shapes must match across datasets.")
         elif isinstance(obs, torch.Tensor):
@@ -237,7 +259,8 @@ def _infer_demo_obs_spec(episodes: list[dict[str, Any]]) -> tuple[int, dict[str,
         else:
             raise TypeError(f"Unsupported obs type: {type(obs)}")
         max_len = max(max_len, length)
-    return max_len, obs_shapes
+    print(f"Context observation terms' order: {term_order}")
+    return max_len, obs_shapes, term_order, concat_dim
 
 
 def _infer_sequence_shape(episodes: list[dict[str, Any]], key: str) -> tuple[int, ...]:
@@ -264,22 +287,29 @@ def _pad_sequence_batch(
     return padded
 
 
-def _allocate_demo_obs_buffer(
-    num_envs: int, max_len: int, obs_shapes: dict[str, tuple[int, ...]] | tuple[int, ...], device: torch.device
-) -> torch.Tensor | dict[str, torch.Tensor]:
+def _allocate_demo_obs_buffers(
+    num_envs: int,
+    max_len: int,
+    obs_shapes: dict[str, tuple[int, ...]] | tuple[int, ...],
+    concat_dim: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
     if isinstance(obs_shapes, dict):
-        return {
+        demo_obs_dict = {
             key: torch.zeros((num_envs, max_len, *shape), device=device) for key, shape in obs_shapes.items()
         }
-    return torch.zeros((num_envs, max_len, *obs_shapes), device=device)
+        demo_obs = torch.zeros((num_envs, max_len, concat_dim), device=device)
+        return demo_obs, demo_obs_dict
+    return torch.zeros((num_envs, max_len, *obs_shapes), device=device), None
 
 
 def _pad_demo_obs_batch(
     obs_list: list[dict[str, torch.Tensor] | torch.Tensor],
     max_len: int,
     obs_shapes: dict[str, tuple[int, ...]] | tuple[int, ...],
+    term_order: list[str] | None,
     device: torch.device,
-) -> tuple[torch.Tensor | dict[str, torch.Tensor], torch.Tensor]:
+) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None, torch.Tensor]:
     if isinstance(obs_shapes, dict):
         lengths = torch.tensor(
             [int(next(iter(obs.values())).shape[0]) for obs in obs_list if isinstance(obs, dict)],
@@ -302,7 +332,10 @@ def _pad_demo_obs_batch(
                 )
                 padded = torch.cat([padded, pad], dim=1)
             stacked[key] = padded
-        return stacked, lengths
+        if term_order is None:
+            term_order = list(obs_shapes.keys())
+        padded_concat = _concatenate_demo_obs(stacked, term_order)
+        return padded_concat, stacked, lengths
     lengths = torch.tensor(
         [int(obs.shape[0]) for obs in obs_list if isinstance(obs, torch.Tensor)],
         device=device,
@@ -321,4 +354,15 @@ def _pad_demo_obs_batch(
             dtype=padded.dtype,
         )
         padded = torch.cat([padded, pad], dim=1)
-    return padded, lengths
+    return padded, None, lengths
+
+
+def _concatenate_demo_obs(stacked: dict[str, torch.Tensor], term_order: list[str]) -> torch.Tensor:
+    sequences = []
+    for key in term_order:
+        value = stacked[key]
+        # Flatten per-term features before concatenation.
+        sequences.append(value.flatten(start_dim=2))
+    if not sequences:
+        raise ValueError("Cannot concatenate empty demo obs.")
+    return torch.cat(sequences, dim=-1)

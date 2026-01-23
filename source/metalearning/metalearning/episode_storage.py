@@ -63,10 +63,10 @@ class EpisodeStorage:
                 "length": length,
                 "env_id": env_id,
             }
-            if states is not None:
-                episode["states"] = self._slice_env_data(states, rollout_idx)
-            if physics is not None:
-                episode["physics"] = self._slice_env_data(physics, rollout_idx)
+            assert states is not None, "states must be provided for episode storage"
+            assert physics is not None, "physics must be provided for episode storage"
+            episode["states"] = self._slice_env_data(states, rollout_idx)
+            episode["physics"] = self._slice_env_data(physics, rollout_idx)
             self.episodes.append(episode)
             self.total_episodes += 1
             if len(self.episodes) >= self.max_num_episodes:

@@ -275,15 +275,15 @@ class TrainEventCfg(BaseEventCfg):
 class FromDemoTrainEventCfg:
     """Training events with from-demo context."""
 
-    random_pushes = EventTerm(
-        func=mdp_events.push_by_setting_velocity,
-        mode="interval",
-        interval_range_s=(1.0, 3.0),
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
-            "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)},
-        },
-    )
+    # random_pushes = EventTerm(
+    #     func=mdp_events.push_by_setting_velocity,
+    #     mode="interval",
+    #     interval_range_s=(1.0, 3.0),
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+    #         "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)},
+    #     },
+    # )
 
     resample_episode = EventTerm(
         func=from_demo_mdp.resample_episode,
@@ -490,7 +490,54 @@ class ObservationsCfg:
             self.enable_corruption = False
             self.concatenate_terms = True
             self.history_length = 5
+
+    # observation groups
+    policy: PolicyCfg = PolicyCfg()
+    critic: CriticCfg = CriticCfg()
+
+@configclass
+class DebugObservationsCfg(ObservationsCfg):
     
+    @configclass
+    class DebugCfg(ObsGroup):
+        """Observations for debug group."""
+
+        end_effector_pose = ObsTerm(
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
+            params={
+                "target_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+                "root_asset_cfg": SceneEntityCfg("robot"),
+                "target_asset_offset_metadata_key": "gripper_offset",
+                "root_asset_offset_metadata_key": "offset",
+                "rotation_repr": "axis_angle",
+            },
+        )
+
+        insertive_asset_pose = ObsTerm(
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
+            params={
+                "target_asset_cfg": SceneEntityCfg("insertive_object"),
+                "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+                "root_asset_offset_metadata_key": "gripper_offset",
+                "rotation_repr": "axis_angle",
+            },
+        )
+
+        receptive_asset_pose = ObsTerm(
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame,
+            params={
+                "target_asset_cfg": SceneEntityCfg("receptive_object"),
+                "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+                "rotation_repr": "axis_angle",
+            },
+        )
+    
+    debug: DebugCfg = DebugCfg()
+
+@configclass
+class DataCollectObservationsCfg(DebugObservationsCfg):
+
+    @configclass
     class DemoCfg(ObsGroup):
         """Observations for demo group."""
 
@@ -539,48 +586,16 @@ class ObservationsCfg:
                 "rotation_repr": "axis_angle",
             },
         )
-    
-    class DebugCfg(ObsGroup):
-        """Observations for debug group."""
 
-        end_effector_pose = ObsTerm(
-            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
-            params={
-                "target_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
-                "root_asset_cfg": SceneEntityCfg("robot"),
-                "target_asset_offset_metadata_key": "gripper_offset",
-                "root_asset_offset_metadata_key": "offset",
-                "rotation_repr": "axis_angle",
-            },
-        )
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = False
+            self.history_length = 1
 
-        insertive_asset_pose = ObsTerm(
-            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
-            params={
-                "target_asset_cfg": SceneEntityCfg("insertive_object"),
-                "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
-                "root_asset_offset_metadata_key": "gripper_offset",
-                "rotation_repr": "axis_angle",
-            },
-        )
-
-        receptive_asset_pose = ObsTerm(
-            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame,
-            params={
-                "target_asset_cfg": SceneEntityCfg("receptive_object"),
-                "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
-                "rotation_repr": "axis_angle",
-            },
-        )
-
-    # observation groups
-    policy: PolicyCfg = PolicyCfg()
-    critic: CriticCfg = CriticCfg()
     demo: DemoCfg = DemoCfg()
-    debug: DebugCfg = DebugCfg()
 
 @configclass
-class TrainingObservationsCfg(ObservationsCfg):
+class TrainingObservationsCfg(DebugObservationsCfg):
     """Observations for training."""
 
     @configclass
@@ -617,8 +632,24 @@ class TrainingObservationsCfg(ObservationsCfg):
             self.concatenate_terms = False
             self.history_length = 1
     
+    @configclass
+    class EndEffectorPoseCfg(ObsGroup):
+        """Observations for end effector pose."""
+        
+        end_effector_pose = ObsTerm(
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
+            params={
+                "target_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+                "root_asset_cfg": SceneEntityCfg("robot"),
+                "target_asset_offset_metadata_key": "gripper_offset",
+                "root_asset_offset_metadata_key": "offset",
+                "rotation_repr": "axis_angle",
+            },
+        )
+    
     critic: TrackingCriticCfg = TrackingCriticCfg()
     context: ContextCfg = ContextCfg()
+    ee_pose: EndEffectorPoseCfg = EndEffectorPoseCfg()
 
 @configclass
 class RewardsCfg:
@@ -682,31 +713,39 @@ class FromDemoRewardsCfg:
 
     # task rewards
 
-    tracking_context = RewTerm(
-        func=from_demo_mdp.tracking_context_reward,
-        weight=10.0,
+    tracking_joint_angle = RewTerm(
+        func=from_demo_mdp.tracking_joint_angle_reward,
+        weight=1.0,
         params={
-            "angle_weight": 1.0,
-            "position_weight": 1.0,
             "joint_tol": 0.1,
+            "huber_delta": 1.0,
+        },
+    )
+
+    tracking_end_effector = RewTerm(
+        func=from_demo_mdp.tracking_end_effector_reward,
+        weight=1.0,
+        params={
             "pos_tol": 0.01,
+            "huber_delta": 1.0,
         },
     )
 
 
 @configclass
 class DemoContextCfg:
+    # episode_paths: str = "episodes/20260122_224145/episodes_000000.pt"
     episode_paths: list[str] = [
-        "episodes/20260121_171426/episodes_000000.pt",
-        "episodes/20260121_171426/episodes_000001.pt",
-        # "episodes/20260121_171426/episodes_000002.pt",
-        # "episodes/20260121_171426/episodes_000003.pt",
-        # "episodes/20260121_171426/episodes_000004.pt",
-        # "episodes/20260121_171426/episodes_000005.pt",
-        # "episodes/20260121_171426/episodes_000006.pt",
-        # "episodes/20260121_171426/episodes_000007.pt",
-        # "episodes/20260121_171426/episodes_000008.pt",
-        # "episodes/20260121_171426/episodes_000009.pt",
+        "episodes/20260122_233651/episodes_000000.pt",
+        "episodes/20260122_233651/episodes_000001.pt",
+        "episodes/20260122_233651/episodes_000002.pt",
+        "episodes/20260122_233651/episodes_000003.pt",
+        "episodes/20260122_233651/episodes_000004.pt",
+        "episodes/20260122_233651/episodes_000005.pt",
+        "episodes/20260122_233651/episodes_000006.pt",
+        "episodes/20260122_233651/episodes_000007.pt",
+        "episodes/20260122_233651/episodes_000008.pt",
+        "episodes/20260122_233651/episodes_000009.pt",
     ]
     state_noise_scale: float = 0.0
     download_dir: str | None = None
@@ -932,6 +971,7 @@ class Ur5eRobotiq2f85RelJointPosDemoCollectCfg(Ur5eRobotiq2f85RlStateCfg):
     events: DemoCollectEventCfg = DemoCollectEventCfg()
     actions: Ur5eRobotiq2f85RelativeOSCAction = Ur5eRobotiq2f85RelativeOSCAction()
     terminations: FromDemoCollectTerminationsCfg = FromDemoCollectTerminationsCfg()
+    observations: DataCollectObservationsCfg = DataCollectObservationsCfg()
 
     def __post_init__(self):
         super().__post_init__()
