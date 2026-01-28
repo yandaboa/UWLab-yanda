@@ -103,7 +103,7 @@ class TransformerEncoder(nn.Module):
         self.embed_proj = torch.jit.annotate(Optional[nn.Linear], None)
         if embedding_dim != hidden_dim:
             self.embed_proj = nn.Linear(embedding_dim, hidden_dim)
-        
+
         self.hidden_dim = hidden_dim
         self.embedding_dim = embedding_dim
         self.emb_drop = nn.Dropout(embedding_dropout)
@@ -218,6 +218,8 @@ class TransformerActor(nn.Module):
         input_dim: int,
         num_actions: int,
         actor_hidden_dims: tuple[int] | list[int],
+        action_bins: Optional[list[int]] = None,
+        categorical_actions: bool = False,
         embedding_dim: Optional[int] = None,
         hidden_dim: int = 256,
         num_layers: int = 4,
@@ -229,6 +231,13 @@ class TransformerActor(nn.Module):
         causal: bool = True,
     ) -> None:
         super().__init__()
+        self.categorical_actions = categorical_actions
+        self.action_bins = tuple(action_bins) if action_bins is not None else None
+        output_dim = num_actions
+        if self.categorical_actions:
+            if self.action_bins is None:
+                raise ValueError("action_bins must be provided for categorical actions.")
+            output_dim = int(sum(self.action_bins))
         self.encoder = TransformerEncoder(
             input_dim=input_dim,
             embedding_dim=embedding_dim,
@@ -241,7 +250,7 @@ class TransformerActor(nn.Module):
             embedding_dropout=embedding_dropout,
             causal=causal,
         )
-        self.action_head = MLP(hidden_dim, num_actions, actor_hidden_dims, "gelu")
+        self.action_head = MLP(hidden_dim, output_dim, actor_hidden_dims, "gelu")
         self.register_buffer("_last_hidden", torch.empty(0), persistent=False)
         self.register_buffer("_last_features", torch.empty(0), persistent=False)
 
@@ -276,6 +285,12 @@ class TransformerActor(nn.Module):
             self._last_features = features
         return features
 
+    def split_action_logits(self, logits: torch.Tensor) -> list[torch.Tensor]:
+        """Split flat logits into per-action logits."""
+        if not self.categorical_actions or self.action_bins is None:
+            raise RuntimeError("split_action_logits is only available for categorical actions.")
+        return list(torch.split(logits, self.action_bins, dim=-1))
+
     @staticmethod
     def _select_tokens(
         hidden: torch.Tensor,
@@ -287,3 +302,11 @@ class TransformerActor(nn.Module):
         batch_indices = torch.arange(hidden.shape[0], device=hidden.device)
         # Select per-batch token positions (advanced indexing).
         return hidden[batch_indices, token_indices, :]
+
+
+class MergedTokenTransformerActor(TransformerActor):
+    """Transformer actor for merged (state, action, reward) tokens."""
+
+
+class StateActionTransformerActor(TransformerActor):
+    """Transformer actor that expects state/action token sequences."""

@@ -4,9 +4,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg
 
 from uwlab_rl.rsl_rl.rl_cfg import RslRlFancyTransformerHistoryActorCriticCfg, TransformerOptimizerCfg
+from uwlab_rl.rsl_rl.metaleanring_cfg import RslRlPpoAlgorithmWarmStartCfg, BCFromContextWarmStartCfg
+
 
 def my_experts_observation_func(env):
     obs = env.unwrapped.obs_buf["expert_obs"]
@@ -35,23 +37,23 @@ class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
 
         embedding_dim=128,
         hidden_dim=256,
-        num_layers=2,
+        num_layers=4,
         num_heads=4,
         embedding_dropout=0.0,
         attention_dropout=0.0,
         residual_dropout=0.0,
 
-        # transformer_actor_only=False,
-        transformer_actor_only=True,
+        transformer_actor_class_name="StateActionTransformerActor",
+        action_distribution="categorical",
 
         cross_attention_merge=True,
         obs_token_count=1,
-        max_num_episodes=1, # not actually implemented yet lol
-        context_length_override=None, # i dont think this does anything either
+        max_num_episodes=1,  # not actually implemented yet lol
+        context_length_override=None,  # i dont think this does anything either
         optimizer=TransformerOptimizerCfg(
             learning_rate=1.0e-4,
             weight_decay=0.00,
-            betas=(0.9, 0.99),
+            betas=(0.75, 0.99),
             eps=1.0e-8,
             max_grad_norm=1.0,
             optimizer_class="AdamW",
@@ -59,7 +61,7 @@ class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
             lr_schedule="cosine_annealing_with_warmup",
         ),
     )
-    algorithm = RslRlPpoAlgorithmCfg(
+    algorithm = RslRlPpoAlgorithmWarmStartCfg(
         class_name="PPOWithLongContext",
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
@@ -74,4 +76,19 @@ class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
+        bc_warmstart_cfg=BCFromContextWarmStartCfg(
+            lr_warmup_steps=500,
+            lr_warmup_start_ratio=0.1,
+            num_steps=5000,
+            num_episodes_per_batch=8,
+            num_minibatches=4,
+            minibatch_size=None,
+            learning_rate=1.0e-4,
+            weight_decay=0.0,
+            betas=(0.9, 0.99),
+            eps=1.0e-8,
+            max_grad_norm=1.0,
+            optimizer_class="AdamW",
+            use_amp=True,
+        ),
     )

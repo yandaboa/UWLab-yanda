@@ -100,6 +100,33 @@ from metalearning.rollout_storage import RolloutStorage
 # PLACEHOLDER: Extension template (do not remove this comment)
 
 
+def _flatten_debug_obs(debug_obs: Any) -> dict[str, torch.Tensor]:
+    if isinstance(debug_obs, Mapping):
+        return {f"debug/{key}": value.detach().clone() for key, value in debug_obs.items()}
+    if isinstance(debug_obs, torch.Tensor):
+        return {"debug": debug_obs.detach().clone()}
+    return {}
+
+
+def _update_demo_snapshot(
+    demo_context: Any,
+    env_ids: torch.Tensor,
+    demo_obs_snapshot: dict[str, torch.Tensor] | None,
+    demo_lengths_snapshot: torch.Tensor,
+) -> None:
+    if env_ids.numel() == 0:
+        return
+    env_ids_cpu = env_ids.detach().cpu()
+    demo_lengths_snapshot[env_ids_cpu] = demo_context.demo_obs_lengths[env_ids].detach().cpu()
+    if demo_obs_snapshot is None:
+        return
+    demo_obs_dict = demo_context.demo_obs_dict
+    if demo_obs_dict is None:
+        return
+    for key, value in demo_obs_dict.items():
+        demo_obs_snapshot[key][env_ids_cpu] = value[env_ids].detach().cpu()
+
+
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
     """Play with RSL-RL agent."""
@@ -195,18 +222,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         normalizer = None
 
     # export policy to onnx/jit
-    export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    # export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+    # export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+    # export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
 
     dt = env.unwrapped.step_dt
 
     # reset environment
     previous_obs = env.get_observations()
     obs_buf = env.unwrapped.obs_buf
-    demo_obs = obs_buf["demo"]
-    debug_obs = obs_buf["debug"]
-    obs_shape = from_demo_utils.extract_obs_shape(demo_obs, debug_obs)
+    policy_obs = obs_buf["policy"]
+    debug_obs = obs_buf.get("debug") if isinstance(obs_buf, Mapping) else None
+    obs_shape = from_demo_utils.extract_obs_shape(policy_obs, debug_obs)
     action_space = getattr(env.unwrapped, "single_action_space", env.action_space)
     action_shape = from_demo_utils.extract_action_shape(action_space)
     max_steps = getattr(env.unwrapped, "max_episode_length", args_cli.video_length)
@@ -222,6 +249,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if demo_context is None:
         raise RuntimeError("FromDemoEval requires a demo context on the environment.")
     demo_indices = demo_context.episode_indices.clone()
+    demo_obs_snapshot = (
+        {key: value.detach().cpu().clone() for key, value in demo_context.demo_obs_dict.items()}
+        if demo_context.demo_obs_dict is not None
+        else None
+    )
+    demo_lengths_snapshot = demo_context.demo_obs_lengths.detach().cpu().clone()
     timestep = 0
     rollouts_collected = 0
     # simulate environment
@@ -233,19 +266,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             actions = policy(previous_obs)
             # env stepping
             obs, rewards, dones, _ = env.step(actions)
-            demo_obs = previous_obs["demo"]
-            debug_obs = previous_obs.get("debug") if isinstance(previous_obs, dict) else None
-            debug_flat = {}
-            if isinstance(debug_obs, Mapping):
-                debug_flat = {f"debug/{key}": value for key, value in debug_obs.items()}
-            elif isinstance(debug_obs, torch.Tensor):
-                debug_flat = {"debug": debug_obs}
-            if isinstance(demo_obs, Mapping):
-                rollout_obs = {**demo_obs, **debug_flat} if debug_flat else demo_obs
-            elif debug_flat:
-                rollout_obs = {"demo": demo_obs, **debug_flat}
+            policy_obs = previous_obs["policy"]
+            if isinstance(previous_obs, Mapping):
+                debug_obs = previous_obs.get("debug")
             else:
-                rollout_obs = demo_obs
+                debug_obs = None
+            if debug_obs is None and isinstance(obs_buf, Mapping):
+                debug_obs = obs_buf.get("debug")
+            debug_flat = _flatten_debug_obs(debug_obs)
+            if isinstance(policy_obs, Mapping):
+                rollout_obs = {**policy_obs, **debug_flat} if debug_flat else policy_obs
+            elif debug_flat:
+                rollout_obs = {"policy": policy_obs, **debug_flat}
+            else:
+                rollout_obs = policy_obs
             rollout_storage.add_step(rollout_obs, actions, rewards, dones)
             # reset recurrent states for episodes that have terminated
             done_mask = dones.to(torch.bool)
@@ -259,10 +293,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     rollout_episode = rollout_to_episode(rollouts, rollout_idx, env_id)
                     demo_index = int(demo_indices[env_id].item())
                     demo_episode = demo_to_episode(demo_context, demo_index, env_id)
-                    pairs.append({"demo": demo_episode, "rollout": rollout_episode})
+                    length = int(demo_lengths_snapshot[env_id].item())
+                    # Slice per-env context obs sequences for storage.
+                    if demo_obs_snapshot is None:
+                        raise RuntimeError("Expected demo observation dict for tracking.")
+                    context_obs_dict = {
+                        key: value[env_id, :length].detach().cpu().clone()
+                        for key, value in demo_obs_snapshot.items()
+                    }
+                    demo_episode["obs"] = context_obs_dict
+                    demo_episode["length"] = length
+                    pairs.append({"context": demo_episode, "rollout": rollout_episode})
                 rollout_pair_storage.add_pairs(pairs)
                 rollouts_collected += len(pairs)
                 rollout_storage.wipe_envs(done_env_ids)
+                _update_demo_snapshot(demo_context, done_env_ids, demo_obs_snapshot, demo_lengths_snapshot)
                 demo_indices[done_env_ids] = demo_context.episode_indices[done_env_ids]
             previous_obs = obs
         if args_cli.video:

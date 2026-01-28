@@ -22,6 +22,7 @@ def target_asset_pose_in_root_asset_frame(
     root_asset_offset=None,
     rotation_repr: str = "quat",
     ood_offset: float = 0.0, # what offset to add to observation term to take us OOD. This is useful for OOD evaluation and training an expert for OOD
+    object_type: str | None = None,
 ):
     target_asset: RigidObject | Articulation = env.scene[target_asset_cfg.name]
     root_asset: RigidObject | Articulation = env.scene[root_asset_cfg.name]
@@ -35,10 +36,15 @@ def target_asset_pose_in_root_asset_frame(
     root_pos = root_asset.data.body_link_pos_w[:, root_body_idx].view(-1, 3)
     root_quat = root_asset.data.body_link_quat_w[:, root_body_idx].view(-1, 4)
 
+    environment_noise = getattr(env, "environment_noise", None)
+    if environment_noise is not None:
+        target_pos = environment_noise.apply_object_noise(target_pos, object_type)
+
     if root_asset_offset is not None:
         root_pos, root_quat = root_asset_offset.combine(root_pos, root_quat)
     if target_asset_offset is not None:
         target_pos, target_quat = target_asset_offset.combine(target_pos, target_quat)
+
 
     target_pos_b, target_quat_b = math_utils.subtract_frame_transforms(root_pos, root_quat, target_pos, target_quat)
 
@@ -98,6 +104,7 @@ class target_asset_pose_in_root_asset_frame_with_metadata(ManagerTermBase):
         target_asset_offset_metadata_key: str | None = None,
         root_asset_offset_metadata_key: str | None = None,
         rotation_repr: str = "quat",
+        object_type: str | None = None,
     ) -> torch.Tensor:
         target_body_idx = 0 if isinstance(self.target_asset_cfg.body_ids, slice) else self.target_asset_cfg.body_ids
         root_body_idx = 0 if isinstance(self.root_asset_cfg.body_ids, slice) else self.root_asset_cfg.body_ids
@@ -107,10 +114,15 @@ class target_asset_pose_in_root_asset_frame_with_metadata(ManagerTermBase):
         root_pos = self.root_asset.data.body_link_pos_w[:, root_body_idx].view(-1, 3)
         root_quat = self.root_asset.data.body_link_quat_w[:, root_body_idx].view(-1, 4)
 
+        environment_noise = getattr(env, "environment_noise", None)
+        if environment_noise is not None:
+            target_pos = environment_noise.apply_object_noise(target_pos, object_type)
+
         if self.root_asset_offset is not None:
             root_pos, root_quat = self.root_asset_offset.combine(root_pos, root_quat)
         if self.target_asset_offset is not None:
             target_pos, target_quat = self.target_asset_offset.combine(target_pos, target_quat)
+
 
         target_pos_b, target_quat_b = math_utils.subtract_frame_transforms(root_pos, root_quat, target_pos, target_quat)
 

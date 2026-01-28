@@ -9,6 +9,6 @@ def resample_environment_noise(env: ManagerBasedEnv, env_ids: torch.Tensor) -> N
         return
     environment_noise = getattr(env, "environment_noise", None)
     if environment_noise is not None:
-        environment_noise.resample_frequency(env_ids)
+        environment_noise.resample_for_envs(env_ids)
     # else:
         # raise ValueError("Environment noise not found in environment.")

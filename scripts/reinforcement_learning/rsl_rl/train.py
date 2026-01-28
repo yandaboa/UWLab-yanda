@@ -81,6 +81,7 @@ import os
 import torch
 from datetime import datetime
 
+from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 from uwlab_rl.rsl_rl.transformer_ppo import PPOWithLongContext
 from uwlab_rl.rsl_rl.long_context_ac import LongContextActorCritic
@@ -89,6 +90,8 @@ import importlib
 runner_mod = importlib.import_module("rsl_rl.runners.on_policy_runner")
 runner_mod.LongContextActorCritic = LongContextActorCritic # type: ignore
 runner_mod.PPOWithLongContext = PPOWithLongContext # type: ignore
+
+from metalearning.bc_from_context_alg import BCFromContext
 
 from isaaclab.envs import (
     DirectMARLEnv,
@@ -179,6 +182,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
+    action_discretization_spec = None
+    context = getattr(env.unwrapped, "context", None)
+    if context is not None:
+        action_discretization_spec = getattr(context, "action_discretization_spec", None)
+        if action_discretization_spec is not None:
+            logger.info("Loaded action discretization spec from demo episodes.")
+
     # save resume path before creating a new log_dir
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
@@ -199,6 +209,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
     agent_cfg_dict = agent_cfg.to_dict()
+    if action_discretization_spec is not None:
+        policy_cfg = agent_cfg_dict.get("policy", {})
+        policy_cfg["action_discretization_spec"] = action_discretization_spec
+        agent_cfg_dict["policy"] = policy_cfg
+    if "bc_warmstart_cfg" in agent_cfg_dict.get("algorithm", {}):
+        agent_cfg_dict["algorithm"].pop("bc_warmstart_cfg")
     if agent_cfg_dict["algorithm"]["class_name"] == "PPOWithLongContext":
         agent_cfg_dict["algorithm"]["num_learning_iterations"] = agent_cfg.max_iterations
     # create runner from rsl-rl
@@ -219,6 +235,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+
+    # we want to initialize wandb before we do any BC warmstart training
+    runner._prepare_logging_writer()
+
+    bc_warmstart_cfg = getattr(agent_cfg.algorithm, "bc_warmstart_cfg", None)
+    if bc_warmstart_cfg is not None:
+        if isinstance(runner.alg, PPO):
+            bc_trainer = BCFromContext(runner.alg, bc_warmstart_cfg)
+            bc_trainer.warm_start(env)
 
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=False)

@@ -43,6 +43,19 @@ docker/.container.cfg
 docker/artifacts/
 *.tmp
 
+# Collected Datasets, downloaded data
+episodes_*
+grasp_datasets/
+partial_assembly_datasets/
+partial_assembly_datasets_small/
+reset_state_datasets/
+episodes/visualizations
+episodes/*
+exported
+rollouts/
+*.pt
+
+
 # Doc Outputs
 **/docs/_build/*
 **/generated/*

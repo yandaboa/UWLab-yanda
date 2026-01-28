@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -105,6 +106,13 @@ def trim_to_length(tensor: torch.Tensor, length: Optional[int]) -> torch.Tensor:
     return tensor[:length]
 
 
+def _blend_color(color: Any, target: Tuple[float, float, float], amount: float) -> Tuple[float, float, float]:
+    rgb = np.array(mcolors.to_rgb(color))
+    tgt = np.array(target)
+    blended = rgb * (1.0 - amount) + tgt * amount
+    return tuple(blended.tolist())
+
+
 def plot_series(data: torch.Tensor, title: str, y_label: str, out_path: Optional[Path]) -> None:
     """Plot time series data for each dimension."""
     data_np = data.detach().cpu().numpy()
@@ -140,9 +148,12 @@ def plot_traj3d(data: torch.Tensor, title: str, out_path: Optional[Path]) -> Non
     x, y, z = data_np.T
     fig = plt.figure(figsize=(6, 6))
     ax = fig.add_subplot(111, projection="3d")
-    ax.plot(x, y, z, linewidth=2.0)
-    ax.scatter(x[0], y[0], z[0], s=60, marker="o")
-    ax.scatter(x[-1], y[-1], z[-1], s=60, marker="^")
+    line = ax.plot(x, y, z, linewidth=2.0)[0]
+    line_color = line.get_color()
+    start_color = _blend_color(line_color, (1.0, 1.0, 1.0), 0.35)
+    end_color = _blend_color(line_color, (0.0, 0.0, 0.0), 0.25)
+    ax.scatter(x[0], y[0], z[0], s=60, marker="o", color=start_color)
+    ax.scatter(x[-1], y[-1], z[-1], s=60, marker="^", color=end_color)
     mins = data_np.min(axis=0)
     maxs = data_np.max(axis=0)
     ax.set_xlim(mins[0], maxs[0])
@@ -191,10 +202,14 @@ def plot_traj3d_pair(
     ax = fig.add_subplot(111, projection="3d")
     ax.plot(demo_x, demo_y, demo_z, linewidth=2.0, color=colors[0], label="demo")
     ax.plot(roll_x, roll_y, roll_z, linewidth=2.0, color=colors[1], label="rollout")
-    ax.scatter(demo_x[0], demo_y[0], demo_z[0], s=50, marker="o", color=colors[0])
-    ax.scatter(demo_x[-1], demo_y[-1], demo_z[-1], s=50, marker="^", color=colors[0])
-    ax.scatter(roll_x[0], roll_y[0], roll_z[0], s=50, marker="o", color=colors[1])
-    ax.scatter(roll_x[-1], roll_y[-1], roll_z[-1], s=50, marker="^", color=colors[1])
+    demo_start = _blend_color(colors[0], (1.0, 1.0, 1.0), 0.35)
+    demo_end = _blend_color(colors[0], (0.0, 0.0, 0.0), 0.25)
+    roll_start = _blend_color(colors[1], (1.0, 1.0, 1.0), 0.35)
+    roll_end = _blend_color(colors[1], (0.0, 0.0, 0.0), 0.25)
+    ax.scatter(demo_x[0], demo_y[0], demo_z[0], s=50, marker="o", color=demo_start)
+    ax.scatter(demo_x[-1], demo_y[-1], demo_z[-1], s=50, marker="^", color=demo_end)
+    ax.scatter(roll_x[0], roll_y[0], roll_z[0], s=50, marker="o", color=roll_start)
+    ax.scatter(roll_x[-1], roll_y[-1], roll_z[-1], s=50, marker="^", color=roll_end)
     mins = np.minimum(demo_np.min(axis=0), rollout_np.min(axis=0))
     maxs = np.maximum(demo_np.max(axis=0), rollout_np.max(axis=0))
     ax.set_xlim(mins[0], maxs[0])

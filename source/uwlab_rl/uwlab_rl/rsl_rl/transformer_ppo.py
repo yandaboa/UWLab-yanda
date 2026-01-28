@@ -65,7 +65,7 @@ class PPOWithLongContext(PPO):
 
         cfg = transformer_optimizer_cfg or getattr(policy, "transformer_optimizer_cfg", None)
         context_encoder = getattr(policy, "context_encoder", None)
-        transformer_only = bool(getattr(policy, "transformer_actor_only", False))
+        transformer_only = bool(getattr(policy, "transformer_actor_class_name", None))
         if cfg is None or context_encoder is None:
             raise ValueError("No transformer optimizer configuration or context encoder found")
 
@@ -249,7 +249,8 @@ class PPOWithLongContext(PPO):
                     # rnd_loss = mseloss(predicted_embedding, target_embedding)
 
             # ---- KL/adaptive LR is inference-only; keep outside autocast ----
-            if self.desired_kl is not None and self.schedule == "adaptive":
+            action_distribution = getattr(self.policy, "action_distribution", "normal")
+            if action_distribution != "categorical" and self.desired_kl is not None and self.schedule == "adaptive":
                 with torch.inference_mode():
                     kl = torch.sum(
                         torch.log(sigma_batch / old_sigma_batch + 1.0e-5)

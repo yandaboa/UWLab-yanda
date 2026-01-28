@@ -22,6 +22,14 @@ class StateStorage:
         if self._state_buffer:
             demo_mdp_utils.update_state_dict(self._state_buffer, current_state, env_ids)
         else:
+            def find_tensor(d: dict[str, Any]) -> torch.Tensor:
+                for value in d.values():
+                    if isinstance(value, torch.Tensor):
+                        return value
+                    if isinstance(value, dict):
+                        return find_tensor(value)
+                return None
+            assert find_tensor(current_state).shape[0] == self._env.num_envs
             self._state_buffer = current_state
         current_physics = _to_cpu(demo_mdp_utils.collect_physics_for_envs(self._env, env_ids))
         if self._physics_buffer:

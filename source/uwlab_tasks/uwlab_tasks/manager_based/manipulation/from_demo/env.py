@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 from typing import Any, Iterable
 
 import torch
@@ -10,6 +12,8 @@ from isaaclab.envs import ManagerBasedRLEnv
 from isaaclab.utils.assets import retrieve_file_path
 
 from .mdp import utils
+
+ACTION_DISCRETIZATION_SPEC_FILENAME = "action_discretization_spec.json"
 
 class DemoTrackingContext:
     """Demo context stored on the environment."""
@@ -33,8 +37,11 @@ class DemoTrackingContext:
         if not isinstance(episode_paths, Iterable) or not episode_paths:
             raise ValueError("DemoTrackingContext requires non-empty episode_paths.")
         self.episodes: list[dict[str, Any]] = []
+        action_discretization_spec: dict[str, Any] | None = None
         for path in episode_paths:
             local_path = retrieve_file_path(str(path), download_dir=download_dir)
+            if action_discretization_spec is None:
+                action_discretization_spec = _load_action_discretization_spec(Path(local_path).parent)
             data = torch.load(local_path, map_location="cpu")
             if not isinstance(data, dict) or "episodes" not in data:
                 raise ValueError(f"Expected EpisodeStorage format in {local_path}.")
@@ -48,6 +55,7 @@ class DemoTrackingContext:
                 self.episodes.append(cleaned)
         if not self.episodes:
             raise ValueError("DemoTrackingContext found no episodes to load.")
+        self.action_discretization_spec = action_discretization_spec
         self.episode_indices = torch.full((resolved_num_envs,), -1, device=resolved_device, dtype=torch.long)
         device = torch.device(resolved_device)
         (
@@ -118,7 +126,7 @@ class DemoTrackingContext:
         self._assign_demo_obs(env_ids_index, padded_obs, padded_obs_dict, lengths)
         self.demo_actions[env_ids_index] = padded_actions
         self.demo_rewards[env_ids_index] = padded_rewards
-        self._env.scene.reset_to(states, env_ids=env_ids, is_relative=True) # type: ignore[arg-type]
+        self._env.scene.reset_to(states, env_ids=env_ids, is_relative=True)  # type: ignore[arg-type]
         utils.apply_physics_for_envs(self._env, env_ids, physics)
 
     def _assign_demo_obs(
@@ -178,6 +186,16 @@ def _strip_debug_obs(episode: dict[str, Any]) -> dict[str, Any]:
         }
         cleaned["obs"] = obs
     return cleaned
+
+
+def _load_action_discretization_spec(directory: Path) -> dict[str, Any] | None:
+    spec_path = directory / ACTION_DISCRETIZATION_SPEC_FILENAME
+    if not spec_path.exists():
+        return None
+    try:
+        return json.loads(spec_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Failed to parse action discretization spec: {spec_path}") from exc
 
 
 def _stack_episode_field(values: list[Any], device: torch.device | str | None) -> Any:

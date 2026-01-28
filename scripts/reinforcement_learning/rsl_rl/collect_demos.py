@@ -84,6 +84,7 @@ import uwlab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from uwlab_tasks.utils.hydra import hydra_task_config
 from uwlab_tasks.manager_based.manipulation.from_demo.mdp import utils as from_demo_utils
+from uwlab_tasks.manager_based.manipulation.from_demo.discrete_action_wrapper import DiscreteActionWrapper
 from metalearning.data.environment_noise import EnvironmentNoise
 from metalearning.episode_storage import EpisodeStorage
 from metalearning.logger import WandbEpisodeLogger, WandbNoiseLogger
@@ -93,6 +94,7 @@ from metalearning.state_storage import StateStorage
 from datetime import datetime
 
 # PLACEHOLDER: Extension template (do not remove this comment)
+
 
 def _flatten_debug_obs(debug_obs: object) -> dict[str, torch.Tensor]:
     if isinstance(debug_obs, Mapping):
@@ -143,9 +145,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
-    
     # for logging, video, etc.
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    episodes_dir = os.path.join(log_dir, "episodes", timestamp)
+
+    action_discretization_cfg = getattr(env_cfg, "action_discretization", None)
+    if action_discretization_cfg is not None:
+        env = DiscreteActionWrapper(env, action_discretization_cfg, spec_save_dir=episodes_dir)
 
     # wrap for video recording
     if args_cli.video:
@@ -168,7 +174,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if noise_cfg is not None:
         if hasattr(noise_cfg, "to_dict"):
             noise_cfg = noise_cfg.to_dict()
-        environment_noise = EnvironmentNoise(noise_cfg, num_envs=env.unwrapped.num_envs, device=env.unwrapped.device)
+        environment_noise = EnvironmentNoise(
+            noise_cfg,
+            num_envs=env.unwrapped.num_envs,
+            env=env.unwrapped,
+            device=env.unwrapped.device,
+        )
         env.unwrapped.environment_noise = environment_noise
 
     # wrap around environment for rsl-rl
@@ -250,7 +261,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     )
     episode_storage = EpisodeStorage(
         max_num_episodes=args_cli.max_demos_before_saving,
-        save_dir=os.path.join(log_dir, "episodes", timestamp),
+        save_dir=episodes_dir,
     )
     progress_bar = tqdm(total=args_cli.num_demos, desc="Demos collected", unit="demos")
     manager_env = cast(ManagerBasedEnv, env.unwrapped)
@@ -258,7 +269,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     state_storage.capture(torch.arange(manager_env.num_envs, device=manager_env.device))
     success_term_name = from_demo_utils.find_success_term_name(manager_env)
     last_episode_count = 0
-    timestep = 0
     global_step = 0
     all_demos_collected = False
     # simulate environment
