@@ -206,6 +206,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
     # wrap around environment for rsl-rl
+    bc_env = env
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
     agent_cfg_dict = agent_cfg.to_dict()
@@ -243,7 +244,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if bc_warmstart_cfg is not None:
         if isinstance(runner.alg, PPO):
             bc_trainer = BCFromContext(runner.alg, bc_warmstart_cfg)
-            bc_trainer.warm_start(env)
+            bc_target_env = bc_env.unwrapped if hasattr(bc_env, "unwrapped") else bc_env
+            bc_trainer.warm_start(bc_target_env)
+            if args_cli.distributed and torch.distributed.is_initialized():
+                torch.distributed.barrier()
 
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=False)

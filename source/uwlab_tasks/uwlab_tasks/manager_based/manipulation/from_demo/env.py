@@ -91,7 +91,9 @@ class DemoTrackingContext:
             env_ids = torch.arange(self._env.num_envs, device=self._env.device)
         if env_ids.numel() == 0:
             return
-        episode_indices = torch.randperm(len(self.episodes), device=self._env.device)[:env_ids.numel()]
+        episode_indices = torch.randint(
+            0, len(self.episodes), (env_ids.numel(),), device=self._env.device
+        )
         self.episode_indices[env_ids] = episode_indices
         selected = [self.episodes[idx] for idx in episode_indices.tolist()]
         padded_obs, padded_obs_dict, lengths = _pad_demo_obs_batch(

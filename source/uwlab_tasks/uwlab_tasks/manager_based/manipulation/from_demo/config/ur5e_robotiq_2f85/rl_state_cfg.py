@@ -877,7 +877,7 @@ class FromDemoRewardsCfg:
 
 @configclass
 class DemoContextCfg:
-    # episode_paths: str = "episodes/20260122_224145/episodes_000000.pt"
+    # episode_paths: str = "episodes/20260128_011438/episodes_000000.pt"
     episode_paths: list[str] = [
         "episodes/20260127_210349/episodes_000000.pt",
         "episodes/20260127_210349/episodes_000001.pt",
@@ -911,7 +911,7 @@ class DemoContextCfg:
 @configclass
 class DemoEvalContextCfg:
     episode_paths: list[str] = [
-        "episodes/20260123_190742/episodes_000000.pt",
+        "episodes/20260128_011438/episodes_000000.pt",
     ]
     state_noise_scale: float = 0.0
     download_dir: str | None = None

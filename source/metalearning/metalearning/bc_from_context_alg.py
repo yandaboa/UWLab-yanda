@@ -10,6 +10,7 @@ from torch.nn.parallel import DistributedDataParallel
 
 from rsl_rl.algorithms.ppo import PPO
 from uwlab_rl.rsl_rl.long_context_ac import LongContextActorCritic
+from uwlab_rl.rsl_rl.lr_utils import cosine_annealing_with_warmup
 from uwlab_rl.rsl_rl.metaleanring_cfg import BCFromContextWarmStartCfg
 
 
@@ -33,6 +34,7 @@ class BCFromContext:
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
         self.optimizer = self._build_optimizer()
         self._base_lrs = [group["lr"] for group in self.optimizer.param_groups]
+        self._lr_scheduler = self._build_lr_scheduler()
         self.loss_fn = nn.MSELoss()
         self.obs_keys: list[str] | None = None
         self._wandb_metrics_defined = False
@@ -49,11 +51,17 @@ class BCFromContext:
             eps=self.cfg.eps,
         )
 
+    def _build_lr_scheduler(self) -> optim.lr_scheduler.LambdaLR | None:
+        warmup_steps = int(self.cfg.lr_warmup_steps)
+        total_steps = int(self.cfg.num_steps)
+        if warmup_steps <= 0 or total_steps <= 0:
+            return None
+        return cosine_annealing_with_warmup(self.optimizer, warmup_steps, total_steps)
+
     def warm_start(self, env: Any) -> dict[str, float]:
         context = _get_env_context(env)
         episodes = context.episodes
-        if not episodes:
-            raise ValueError("No demo episodes found in env.context.")
+        self._validate_episode_counts(episodes)
         if self._ddp_policy is not None:
             self._ddp_policy.train()
         else:
@@ -62,10 +70,12 @@ class BCFromContext:
         total_grad_norm = 0.0
         num_updates = 0
         for step_idx in range(self.cfg.num_steps):
-            self._apply_lr_warmup(step_idx)
             batch = self._sample_episode_batch(episodes, self.cfg.num_episodes_per_batch)
             data = self._prepare_batch(batch)
             loss_value, grad_norm = self._train_on_batch(**data)
+            self._apply_lr_schedule(step_idx)
+            if self._should_log() and step_idx % 10 == 0:
+                print(f"Loss: {loss_value}, Grad Norm: {grad_norm}")
             loss_value, grad_norm = self._sync_metrics(loss_value, grad_norm)
             total_loss += loss_value
             total_grad_norm += grad_norm
@@ -155,21 +165,23 @@ class BCFromContext:
             batch_target = target_actions[idx]
             with torch.cuda.amp.autocast(enabled=self.use_amp):
                 if self._categorical_actions:
-                    logits = self._predict_action_logits(
+                    logits = self._forward_from_context(
                         batch_demo_obs,
                         batch_demo_actions,
                         batch_demo_rewards,
                         batch_demo_lengths,
                         batch_current_obs,
+                        return_logits=True,
                     )
                     loss = self._categorical_loss(logits, batch_target)
                 else:
-                    pred = self.policy.act_from_context(
+                    pred = self._forward_from_context(
                         batch_demo_obs,
                         batch_demo_actions,
                         batch_demo_rewards,
                         batch_demo_lengths,
                         batch_current_obs,
+                        return_logits=False,
                     )
                     loss = self.loss_fn(pred, batch_target)
             self.optimizer.zero_grad(set_to_none=True)
@@ -220,6 +232,25 @@ class BCFromContext:
         obs_tensor = self.policy.actor_obs_normalizer(obs_tensor)
         return self.policy.actor(obs_tensor)
 
+    def _forward_from_context(
+        self,
+        demo_obs: torch.Tensor,
+        demo_actions: torch.Tensor,
+        demo_rewards: torch.Tensor,
+        demo_lengths: torch.Tensor,
+        current_obs: torch.Tensor,
+        return_logits: bool,
+    ) -> torch.Tensor:
+        policy = self._ddp_policy if self._ddp_policy is not None else self.policy
+        return policy(
+            demo_obs,
+            demo_actions,
+            demo_rewards,
+            demo_lengths,
+            current_obs,
+            return_logits=return_logits,
+        )
+
     def _categorical_loss(self, logits: torch.Tensor, target_actions: torch.Tensor) -> torch.Tensor:
         action_bins = self.policy.action_bins
         if action_bins is None:
@@ -261,15 +292,10 @@ class BCFromContext:
             return max(1, int(self.cfg.minibatch_size))
         return max(1, int(num_samples / max(self.cfg.num_minibatches, 1)))
 
-    def _apply_lr_warmup(self, step_idx: int) -> None:
-        warmup_steps = int(self.cfg.lr_warmup_steps)
-        if warmup_steps <= 0:
+    def _apply_lr_schedule(self, step_idx: int) -> None:
+        if self._lr_scheduler is None:
             return
-        progress = min(step_idx + 1, warmup_steps) / float(warmup_steps)
-        start_ratio = float(self.cfg.lr_warmup_start_ratio)
-        scale = start_ratio + (1.0 - start_ratio) * progress
-        for base_lr, group in zip(self._base_lrs, self.optimizer.param_groups):
-            group["lr"] = base_lr * scale
+        self._lr_scheduler.step(step_idx + 1)
 
     def _resolve_distributed_state(self) -> tuple[bool, int, int]:
         is_distributed = torch.distributed.is_available() and torch.distributed.is_initialized()
@@ -302,6 +328,22 @@ class BCFromContext:
         torch.distributed.all_reduce(metrics, op=torch.distributed.ReduceOp.SUM)
         metrics = metrics / float(self._gpu_world_size)
         return float(metrics[0].item()), float(metrics[1].item())
+
+    def _validate_episode_counts(self, episodes: list[dict[str, Any]]) -> None:
+        if not self._is_multi_gpu:
+            if not episodes:
+                raise ValueError("No demo episodes found in env.context.")
+            return
+        if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+            if not episodes:
+                raise ValueError("No demo episodes found in env.context.")
+            return
+        local_count = torch.tensor([len(episodes)], device=self.device, dtype=torch.int64)
+        counts = [torch.zeros_like(local_count) for _ in range(self._gpu_world_size)]
+        torch.distributed.all_gather(counts, local_count)
+        count_values = [int(count.item()) for count in counts]
+        if any(count == 0 for count in count_values):
+            raise ValueError(f"BC warm-start requires demo episodes on all ranks. counts={count_values}")
 
     def _should_log(self) -> bool:
         return not self._is_multi_gpu or self._gpu_global_rank == 0

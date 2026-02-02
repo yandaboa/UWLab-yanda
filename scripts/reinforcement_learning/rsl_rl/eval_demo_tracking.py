@@ -169,6 +169,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
+    action_discretization_spec = None
+    context = getattr(env.unwrapped, "context", None)
+    if context is not None:
+        action_discretization_spec = getattr(context, "action_discretization_spec", None)
+        if action_discretization_spec is not None:
+            print("Loaded action discretization spec from demo episodes.")
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     rollout_dir = os.path.join(log_dir, "rollouts", "demo_tracking", timestamp)
     rollout_pair_storage = RolloutPairStorage(args_cli.max_rollouts_before_saving, rollout_dir)
@@ -190,6 +197,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     agent_cfg_dict = agent_cfg.to_dict()
+    if action_discretization_spec is not None:
+        policy_cfg = agent_cfg_dict.get("policy", {})
+        policy_cfg["action_discretization_spec"] = action_discretization_spec
+        agent_cfg_dict["policy"] = policy_cfg
+    if "bc_warmstart_cfg" in agent_cfg_dict.get("algorithm", {}):
+        agent_cfg_dict["algorithm"].pop("bc_warmstart_cfg")
     if agent_cfg_dict["algorithm"]["class_name"] == "PPOWithLongContext":
         agent_cfg_dict["algorithm"]["num_learning_iterations"] = agent_cfg.max_iterations
     # load previously trained model

@@ -421,6 +421,59 @@ class LongContextActorCritic(ActorCritic):
             return self.actor(obs_tensor)[..., 0, :]
         return self.actor(obs_tensor)
 
+    def forward(
+        self,
+        demo_obs: torch.Tensor,
+        demo_actions: torch.Tensor,
+        demo_rewards: torch.Tensor,
+        demo_lengths: torch.Tensor,
+        current_obs: torch.Tensor,
+        return_logits: bool = False,
+    ) -> torch.Tensor:
+        """Forward pass for context-conditioned BC/DDP."""
+        if self._use_transformer_actor():
+            tokens, padding_mask, token_indices = self._build_transformer_tokens_from_context(
+                demo_obs,
+                demo_actions,
+                demo_rewards,
+                demo_lengths,
+                current_obs,
+            )
+            obs_tensor = self._normalize_transformer_tokens(tokens)
+            logits_or_mean = self.actor(
+                obs_tensor,
+                padding_mask=padding_mask,
+                token_indices=token_indices,
+            )
+            if self.action_distribution == "categorical":
+                self._last_action_logits = logits_or_mean
+                self._update_categorical_distribution(logits_or_mean)
+                if return_logits:
+                    return logits_or_mean
+                return self._categorical_indices_to_values(self.distribution.mode)
+            return logits_or_mean
+        if self.context_encoder is None:
+            raise RuntimeError("Context encoder is not initialized.")
+        context_hidden = self.context_encoder(demo_obs, demo_actions, demo_rewards)
+        # Advanced indexing to pick the last valid context token per sample.
+        context_hidden = context_hidden[
+            torch.arange(demo_obs.shape[0], device=demo_obs.device),
+            demo_lengths.squeeze(-1).to(dtype=torch.long) - 1,
+            :,
+        ]
+        obs_tensor = self._merge_obs_with_context(current_obs, context_hidden)
+        obs_tensor = self.actor_obs_normalizer(obs_tensor)
+        if self.action_distribution == "categorical":
+            logits = self.actor(obs_tensor)
+            self._last_action_logits = logits
+            self._update_categorical_distribution(logits)
+            if return_logits:
+                return logits
+            return self._categorical_indices_to_values(self.distribution.mode)
+        if self.state_dependent_std:
+            return self.actor(obs_tensor)[..., 0, :]
+        return self.actor(obs_tensor)
+
     def evaluate(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
         """Evaluate the value function with context-aware inputs."""
         obs_tensor = self.get_critic_obs(obs)
