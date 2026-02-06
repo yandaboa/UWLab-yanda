@@ -8,6 +8,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg
 
 from uwlab_rl.rsl_rl.rl_cfg import RslRlFancyTransformerHistoryActorCriticCfg, TransformerOptimizerCfg
 from uwlab_rl.rsl_rl.metaleanring_cfg import RslRlPpoAlgorithmWarmStartCfg, BCFromContextWarmStartCfg
+from .trajectory_viz_cfg import TrajectoryVizCfg
 
 
 def my_experts_observation_func(env):
@@ -28,15 +29,15 @@ class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
         init_noise_std=1.0,
         actor_obs_normalization=False,
         critic_obs_normalization=True,
-        actor_hidden_dims=[128],
+        actor_hidden_dims=[512],
         # actor_hidden_dims=[256, 128],
         critic_hidden_dims=[512, 256, 128, 64],
         activation="elu",
         noise_std_type="gsde",
         state_dependent_std=False,
 
-        embedding_dim=128,
-        hidden_dim=256,
+        embedding_dim=256,
+        hidden_dim=512,
         num_layers=4,
         num_heads=4,
         embedding_dropout=0.0,
@@ -44,7 +45,7 @@ class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
         residual_dropout=0.0,
 
         transformer_actor_class_name="StateActionTransformerActor",
-        action_distribution="categorical",
+        action_distribution="normal",
 
         cross_attention_merge=True,
         obs_token_count=1,
@@ -53,12 +54,13 @@ class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
         optimizer=TransformerOptimizerCfg(
             learning_rate=1.0e-4,
             weight_decay=0.00,
-            betas=(0.75, 0.99),
+            betas=(0.9, 0.95),
             eps=1.0e-8,
             max_grad_norm=1.0,
             optimizer_class="AdamW",
-            lr_warmup_steps=100,
-            lr_schedule="cosine_annealing_with_warmup",
+            lr_warmup_steps=200,
+            # lr_schedule="cosine_annealing_with_warmup",
+            lr_schedule=None,
         ),
     )
     algorithm = RslRlPpoAlgorithmWarmStartCfg(
@@ -76,21 +78,23 @@ class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
-        bc_warmstart_cfg=BCFromContextWarmStartCfg(
-            # lr_warmup_steps=100,
-            lr_warmup_steps=500,
-            lr_warmup_start_ratio=0.1,
-            # num_steps=150,
-            num_steps=1500,
-            num_episodes_per_batch=8,
-            num_minibatches=4,
-            minibatch_size=None,
-            learning_rate=1.0e-4,
-            weight_decay=0.0,
-            betas=(0.9, 0.99),
-            eps=1.0e-8,
-            max_grad_norm=1.0,
-            optimizer_class="AdamW",
-            use_amp=True,
-        ),
+        bc_warmstart_cfg=None,
+        # bc_warmstart_cfg=BCFromContextWarmStartCfg(
+        #     # lr_warmup_steps=100,
+        #     lr_warmup_steps=500,
+        #     lr_warmup_start_ratio=0.1,
+        #     # num_steps=150,
+        #     num_steps=1500,
+        #     num_episodes_per_batch=8,
+        #     num_minibatches=4,
+        #     minibatch_size=None,
+        #     learning_rate=1.0e-4,
+        #     weight_decay=0.0,
+        #     betas=(0.9, 0.99),
+        #     eps=1.0e-8,
+        #     max_grad_norm=1.0,
+        #     optimizer_class="AdamW",
+        #     use_amp=True,
+        # ),
     )
+    trajectory_viz: TrajectoryVizCfg = TrajectoryVizCfg()

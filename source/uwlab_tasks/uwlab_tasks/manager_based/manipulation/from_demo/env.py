@@ -64,6 +64,8 @@ class DemoTrackingContext:
             self.demo_obs_term_order,
             self.demo_obs_concat_dim,
         ) = _infer_demo_obs_spec(self.episodes)
+        # override the max length to 160
+        self.demo_obs_max_len = 160
         self.demo_obs, self.demo_obs_dict = _allocate_demo_obs_buffers(
             resolved_num_envs,
             self.demo_obs_max_len,
@@ -128,7 +130,13 @@ class DemoTrackingContext:
         self._assign_demo_obs(env_ids_index, padded_obs, padded_obs_dict, lengths)
         self.demo_actions[env_ids_index] = padded_actions
         self.demo_rewards[env_ids_index] = padded_rewards
-        self._env.scene.reset_to(states, env_ids=env_ids, is_relative=True)  # type: ignore[arg-type]
+        multi_reset_manager = getattr(self._env, "multi_reset_manager", None)
+        if _is_multi_reset_state(states) and multi_reset_manager is not None:
+            task_ids = states["multi_reset_task_id"]
+            state_indices = states["multi_reset_state_index"]
+            multi_reset_manager.load_saved_states(env_ids, state_indices, task_ids=task_ids)
+        else:
+            self._env.scene.reset_to(states, env_ids=env_ids, is_relative=True)  # type: ignore[arg-type]
         utils.apply_physics_for_envs(self._env, env_ids, physics)
 
     def _assign_demo_obs(
@@ -188,6 +196,12 @@ def _strip_debug_obs(episode: dict[str, Any]) -> dict[str, Any]:
         }
         cleaned["obs"] = obs
     return cleaned
+
+
+def _is_multi_reset_state(states: Any) -> bool:
+    if not isinstance(states, dict):
+        return False
+    return "multi_reset_task_id" in states and "multi_reset_state_index" in states
 
 
 def _load_action_discretization_spec(directory: Path) -> dict[str, Any] | None:

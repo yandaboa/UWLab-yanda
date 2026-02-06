@@ -187,7 +187,7 @@ class BaseEventCfg:
         params={
             "asset_cfg": SceneEntityCfg("insertive_object"),
             # we assume insertive object is somewhere between 20g and 200g
-            "mass_distribution_params": (1.0, 1.5),
+            "mass_distribution_params": (0.5, 1.0),
             # "mass_distribution_params": (0.02, 0.2),
             "operation": "abs",
             "distribution": "uniform",

@@ -266,7 +266,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     progress_bar = tqdm(total=args_cli.num_demos, desc="Demos collected", unit="demos")
     manager_env = cast(ManagerBasedEnv, env.unwrapped)
     state_storage = StateStorage(manager_env)
-    state_storage.capture(torch.arange(manager_env.num_envs, device=manager_env.device))
     success_term_name = from_demo_utils.find_success_term_name(manager_env)
     last_episode_count = 0
     global_step = 0
@@ -282,6 +281,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 actions = environment_noise.step_action(actions)
             # env stepping
             obs, rewards, dones, extras = env.step(actions)
+            if not state_storage._state_buffer: # type: ignore[attr-defined]
+                state_storage.capture(torch.arange(manager_env.num_envs, device=manager_env.device))
             demo_obs = previous_obs["demo"]
             debug_obs = previous_obs.get("debug") if isinstance(previous_obs, dict) else None
             debug_flat = _flatten_debug_obs(debug_obs)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, cast
+from typing import Any, Callable, Sequence, cast
 import inspect
 
 import torch
@@ -98,6 +98,7 @@ def pose_quat_tracking_reward(
 def tracking_end_effector_reward(
     env: "ManagerBasedRLEnv",
     k: float = 40.0,  # the -40 in the paper
+    tolerance: float = 0.5,
 ) -> torch.Tensor:
     context_term = _get_tracking_context(env)
 
@@ -118,7 +119,7 @@ def tracking_end_effector_reward(
     curr_ee_pos = curr_ee_pose[:, :3]  # [N, 3]
 
     # ||p_hat - p||^2  (squared L2 norm), NOT mean-square
-    sq_dist = torch.sum((demo_ee_pos - curr_ee_pos) ** 2, dim=-1)  # [N]
+    sq_dist = torch.sum(((demo_ee_pos - curr_ee_pos)/ tolerance) ** 2, dim=-1)  # [N]
 
     # exp(-40 * sum_e ||...||^2); with one EE, sum_e is just sq_dist
     return torch.exp(-k * sq_dist)
@@ -155,8 +156,30 @@ def resample_episode(env: ManagerBasedRLEnv, env_ids: torch.Tensor | None = None
     context_term.reset(env_ids)
 
 
-def get_demo_obs(env: ManagerBasedEnv) -> torch.Tensor:
+
+def _concat_demo_obs_keys(
+    demo_obs_dict: dict[str, torch.Tensor], observation_keys: Sequence[str]
+) -> torch.Tensor:
+    missing = [key for key in observation_keys if key not in demo_obs_dict]
+    if missing:
+        raise KeyError(f"Requested demo obs keys not found: {missing}")
+    sequences = [demo_obs_dict[key].flatten(start_dim=2) for key in observation_keys]
+    return torch.cat(sequences, dim=-1)
+
+
+
+def get_demo_obs(
+    env: ManagerBasedEnv,
+    observation_keys: Sequence[str] | None = None,
+) -> torch.Tensor:
     context_term = _get_tracking_context(env)
+    if observation_keys:
+        demo_obs_dict = context_term.demo_obs_dict
+        if demo_obs_dict is None and isinstance(context_term.demo_obs, dict):
+            demo_obs_dict = context_term.demo_obs
+        if demo_obs_dict is None:
+            raise ValueError("Demo obs dict is required when requesting observation keys.")
+        return _concat_demo_obs_keys(demo_obs_dict, observation_keys)
     if isinstance(context_term.demo_obs, dict):
         if "demo" in context_term.demo_obs:
             return context_term.demo_obs["demo"]
@@ -179,8 +202,11 @@ def get_demo_lengths(env: ManagerBasedEnv) -> torch.Tensor:
     return context_term.demo_obs_lengths.unsqueeze(-1)
 
 
-def get_supervision_demo_obs(env: ManagerBasedRLEnv) -> torch.Tensor:
-    demo_obs = get_demo_obs(env)
+def get_supervision_demo_obs(
+    env: ManagerBasedRLEnv,
+    observation_keys: Sequence[str] | None = None,
+) -> torch.Tensor:
+    demo_obs = get_demo_obs(env, observation_keys)
     # we supervise to next obs - a 'goal' obs
     t = (env.episode_length_buf.long() + 1).clamp(max=get_demo_lengths(env).squeeze(-1) - 1)
     env_ids = torch.arange(env.num_envs, device=demo_obs.device)

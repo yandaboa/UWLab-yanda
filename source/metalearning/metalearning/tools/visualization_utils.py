@@ -231,3 +231,55 @@ def plot_traj3d_pair(
         plt.close(fig)
     else:
         plt.show()
+
+
+def create_traj3d_pair_figure(
+    demo: torch.Tensor,
+    rollout: torch.Tensor,
+    title: str,
+    colors: tuple[str, str] = ("tab:blue", "tab:orange"),
+):
+    """Create a matplotlib figure for paired 3D trajectories."""
+    demo_np = demo.detach().cpu().numpy()
+    rollout_np = rollout.detach().cpu().numpy()
+    if demo_np.ndim != 2 or demo_np.shape[1] < 3:
+        raise ValueError(f"Expected demo (T, >=3) data, got {demo_np.shape}.")
+    if rollout_np.ndim != 2 or rollout_np.shape[1] < 3:
+        raise ValueError(f"Expected rollout (T, >=3) data, got {rollout_np.shape}.")
+    demo_np = demo_np[:, :3]
+    rollout_np = rollout_np[:, :3]
+    demo_np = demo_np[np.isfinite(demo_np).all(axis=1)]
+    rollout_np = rollout_np[np.isfinite(rollout_np).all(axis=1)]
+    if demo_np.shape[0] < 2 or rollout_np.shape[0] < 2:
+        raise ValueError("Not enough finite points to plot.")
+    demo_x, demo_y, demo_z = demo_np.T
+    roll_x, roll_y, roll_z = rollout_np.T
+    fig = plt.figure(figsize=(6, 6))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.plot(demo_x, demo_y, demo_z, linewidth=2.0, color=colors[0], label="demo")
+    ax.plot(roll_x, roll_y, roll_z, linewidth=2.0, color=colors[1], label="rollout")
+    demo_start = _blend_color(colors[0], (1.0, 1.0, 1.0), 0.35)
+    demo_end = _blend_color(colors[0], (0.0, 0.0, 0.0), 0.25)
+    roll_start = _blend_color(colors[1], (1.0, 1.0, 1.0), 0.35)
+    roll_end = _blend_color(colors[1], (0.0, 0.0, 0.0), 0.25)
+    ax.scatter(demo_x[0], demo_y[0], demo_z[0], s=50, marker="o", color=demo_start)
+    ax.scatter(demo_x[-1], demo_y[-1], demo_z[-1], s=50, marker="^", color=demo_end)
+    ax.scatter(roll_x[0], roll_y[0], roll_z[0], s=50, marker="o", color=roll_start)
+    ax.scatter(roll_x[-1], roll_y[-1], roll_z[-1], s=50, marker="^", color=roll_end)
+    mins = np.minimum(demo_np.min(axis=0), rollout_np.min(axis=0))
+    maxs = np.maximum(demo_np.max(axis=0), rollout_np.max(axis=0))
+    ax.set_xlim(mins[0], maxs[0])
+    ax.set_ylim(mins[1], maxs[1])
+    ax.set_zlim(mins[2], maxs[2])
+    try:
+        ax.set_box_aspect((maxs - mins))
+    except Exception:
+        pass
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_zlabel("z")
+    ax.view_init(elev=25, azim=45)
+    ax.set_title(title)
+    ax.legend()
+    fig.tight_layout()
+    return fig

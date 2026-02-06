@@ -82,9 +82,11 @@ import torch
 from datetime import datetime
 
 from rsl_rl.algorithms.ppo import PPO
-from rsl_rl.runners import DistillationRunner, OnPolicyRunner
+from rsl_rl.runners import OnPolicyRunner
 from uwlab_rl.rsl_rl.transformer_ppo import PPOWithLongContext
+from uwlab_rl.rsl_rl.trajectory_runner import TrajectoryOnPolicyRunner
 from uwlab_rl.rsl_rl.long_context_ac import LongContextActorCritic
+from uwlab_rl.rsl_rl.distillation_runner import DistillationRunner
 
 import importlib
 runner_mod = importlib.import_module("rsl_rl.runners.on_policy_runner")
@@ -190,8 +192,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             print("Loaded action discretization spec from demo episodes.")
 
     # save resume path before creating a new log_dir
-    if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
+    if agent_cfg.resume:
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+    if agent_cfg.algorithm.class_name == "Distillation":
+        resume_path = agent_cfg.load_expert
 
     # wrap for video recording
     if args_cli.video:
@@ -220,7 +224,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         agent_cfg_dict["algorithm"]["num_learning_iterations"] = agent_cfg.max_iterations
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(env, agent_cfg_dict, log_dir=log_dir, device=agent_cfg.device)
+        trajectory_cfg = agent_cfg_dict.get("trajectory_viz", {})
+        if isinstance(trajectory_cfg, dict) and trajectory_cfg.get("enable", False):
+            runner = TrajectoryOnPolicyRunner(env, agent_cfg_dict, log_dir=log_dir, device=agent_cfg.device)
+        else:
+            runner = OnPolicyRunner(env, agent_cfg_dict, log_dir=log_dir, device=agent_cfg.device)
     elif agent_cfg.class_name == "DistillationRunner":
         runner = DistillationRunner(env, agent_cfg_dict, log_dir=log_dir, device=agent_cfg.device)
     else:

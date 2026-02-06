@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+import os
 from typing import Any, Mapping, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
+
+from .rollout_pair_storage import RolloutPairStorage
+from .tools.visualization_utils import create_traj3d_pair_figure, get_pose_obs, trim_to_length
 
 
 class WandbNoiseLogger:
@@ -217,6 +222,91 @@ class WandbEpisodeLogger:
             del self._episode_lengths[:batch_size]
             log_payload["episode/avg_length"] = float(np.mean(lengths))
         run.log(log_payload, step=step)
+
+    def _resolve_names(
+        self,
+        agent_cfg: Mapping[str, Any] | Any,
+        project_name: str | None,
+        run_name: str | None,
+    ) -> tuple[str | None, str | None]:
+        if isinstance(agent_cfg, Mapping):
+            project = project_name or agent_cfg.get("wandb_project") or agent_cfg.get("experiment_name")
+            run = run_name or agent_cfg.get("run_name")
+            return project, run
+        project = project_name or getattr(agent_cfg, "wandb_project", None) or getattr(agent_cfg, "experiment_name", None)
+        run = run_name or getattr(agent_cfg, "run_name", None)
+        return project, run
+
+
+class WandbTrajectoryLogger:
+    """Wandb logger for demo-vs-rollout trajectory plots."""
+
+    def __init__(
+        self,
+        enable: bool,
+        agent_cfg: Mapping[str, Any] | Any,
+        log_dir: str,
+        task_name: str,
+        project_name: str | None = None,
+        run_name: str | None = None,
+        run=None,
+        wandb_module=None,
+        obs_key: str = "debug/end_effector_pose",
+        demo_obs_key: str = "end_effector_pose",
+        save_pairs: bool = False,
+        max_pairs_per_log: int = 1,
+    ) -> None:
+        self._wandb = wandb_module
+        self._run = run
+        self._obs_key = obs_key
+        self._demo_obs_key = demo_obs_key
+        self._save_pairs = save_pairs
+        self._pair_storage = None
+        if save_pairs:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_dir = os.path.join(log_dir, "rollouts", "demo_tracking", timestamp)
+            self._pair_storage = RolloutPairStorage(max_pairs_per_log, save_dir)
+        if not enable:
+            return
+        if self._wandb is None:
+            try:
+                import wandb  # type: ignore
+            except ImportError:
+                print("[INFO] Wandb requested but not installed.")
+                return
+            self._wandb = wandb
+        if self._run is None:
+            self._run = getattr(self._wandb, "run", None)
+
+    def log_pairs(self, pairs: Sequence[Mapping[str, Any]], step: int) -> None:
+        """Log a batch of trajectory plots."""
+        if self._pair_storage is not None:
+            self._pair_storage.add_pairs([dict(pair) for pair in pairs])
+            self._pair_storage.force_save()
+        if self._wandb is None:
+            return
+        log_payload = {}
+        for idx, pair in enumerate(pairs):
+            context_episode = pair.get("context") or pair.get("demo")
+            rollout_episode = pair.get("rollout")
+            if context_episode is None or rollout_episode is None:
+                continue
+            context_obs, _ = get_pose_obs(context_episode["obs"], self._demo_obs_key)
+            rollout_obs, _ = get_pose_obs(rollout_episode["obs"], self._obs_key)
+            context_obs = trim_to_length(context_obs, context_episode.get("length"))
+            rollout_obs = trim_to_length(rollout_obs, rollout_episode.get("length"))
+            fig = create_traj3d_pair_figure(
+                context_obs[..., :3],
+                rollout_obs[..., :3],
+                f"Demo vs Rollout ({idx})",
+            )
+            log_payload[f"trajectory/pair_{idx:02d}"] = self._wandb.Image(fig)
+            plt.close(fig)
+        if log_payload:
+            if self._run is not None:
+                self._run.log(log_payload, step=step)
+            elif self._wandb is not None:
+                self._wandb.log(log_payload, step=step)
 
     def _resolve_names(
         self,

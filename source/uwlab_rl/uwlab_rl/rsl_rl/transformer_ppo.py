@@ -13,41 +13,75 @@ from uwlab_rl.rsl_rl.lr_utils import cosine_annealing_with_warmup, linear_warmup
 from uwlab_rl.rsl_rl.discrete_action_rollout_storage import DiscreteActionRolloutStorage
 
 class CompositeOptimizer:
-    """Proxy optimizer that forwards to policy and encoder optimizers."""
+    """Proxy optimizer that forwards to a named set of optimizers."""
 
-    def __init__(self, policy_optimizer: optim.Optimizer, encoder_optimizer: optim.Optimizer) -> None:
-        self.policy_optimizer = policy_optimizer
-        self.encoder_optimizer = encoder_optimizer
-
-    @property
-    def policy_param_groups(self) -> list[dict[str, Any]]:
-        return self.policy_optimizer.param_groups
+    def __init__(self, optimizers: dict[str, optim.Optimizer]) -> None:
+        if not optimizers:
+            raise ValueError("CompositeOptimizer requires at least one optimizer.")
+        self.optimizers = dict(optimizers)
 
     def zero_grad(self, set_to_none: bool = False) -> None:
-        self.policy_optimizer.zero_grad(set_to_none=set_to_none)
-        self.encoder_optimizer.zero_grad(set_to_none=set_to_none)
+        for optimizer in self.optimizers.values():
+            optimizer.zero_grad(set_to_none=set_to_none)
 
-    def step(self, closure: Callable | None = None) -> tuple[Any, Any]:
-        policy_result = self.policy_optimizer.step(closure=closure)
-        encoder_result = self.encoder_optimizer.step(closure=closure)
-        return policy_result, encoder_result
+    def step(self, closure: Callable | None = None) -> dict[str, Any]:
+        results = {}
+        for name, optimizer in self.optimizers.items():
+            results[name] = optimizer.step(closure=closure)
+        return results
+
+    def iter_param_groups(self, keys: Iterable[str] | None = None) -> Iterable[dict[str, Any]]:
+        if keys is None:
+            for optimizer in self.optimizers.values():
+                yield from optimizer.param_groups
+            return
+        for key in keys:
+            optimizer = self.optimizers.get(key)
+            if optimizer is None:
+                continue
+            yield from optimizer.param_groups
+
+    def set_lr(self, lr: float, keys: Iterable[str] | None = None) -> None:
+        for param_group in self.iter_param_groups(keys):
+            param_group["lr"] = lr
+
+    def get_lr(self, key: str) -> float:
+        optimizer = self.optimizers[key]
+        return optimizer.param_groups[0]["lr"]
 
     def state_dict(self) -> dict[str, Any]:
-        return {
-            "policy": self.policy_optimizer.state_dict(),
-            "encoder": self.encoder_optimizer.state_dict(),
-        }
+        return {name: optimizer.state_dict() for name, optimizer in self.optimizers.items()}
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        if "policy" in state_dict and "encoder" in state_dict:
-            self.policy_optimizer.load_state_dict(state_dict["policy"])
-            self.encoder_optimizer.load_state_dict(state_dict["encoder"])
-        else:
-            self.policy_optimizer.load_state_dict(state_dict)
+        if isinstance(state_dict, dict) and all(isinstance(v, dict) for v in state_dict.values()):
+            if set(state_dict.keys()) == set(self.optimizers.keys()):
+                for name, opt_state in state_dict.items():
+                    self.optimizers[name].load_state_dict(opt_state)
+                return
+            legacy_map = {"policy": "policy", "encoder": "transformer"}
+            if set(state_dict.keys()).issubset(legacy_map.keys()):
+                for legacy_key, opt_state in state_dict.items():
+                    target_key = legacy_map[legacy_key]
+                    if target_key in self.optimizers:
+                        self.optimizers[target_key].load_state_dict(opt_state)
+                return
+        if len(self.optimizers) == 1:
+            next(iter(self.optimizers.values())).load_state_dict(state_dict)
+            return
+        raise ValueError("State dict does not match CompositeOptimizer keys.")
 
 
 class PPOWithLongContext(PPO):
-    """PPO variant that uses a dedicated transformer optimizer."""
+    """PPO variant that optionally uses a dedicated transformer optimizer.
+
+    Learning-rate behavior:
+    - If a transformer optimizer is configured, it updates transformer params while the
+      policy optimizer updates the remaining params.
+    - If a transformer LR scheduler is provided, it governs the transformer LR; otherwise,
+      adaptive KL-based LR is applied to both policy and transformer optimizers.
+    - If no transformer optimizer is configured, a single optimizer covers all params and
+      adaptive KL-based LR applies across the whole model.
+    """
 
     def __init__(
         self,
@@ -70,36 +104,57 @@ class PPOWithLongContext(PPO):
         cfg = transformer_optimizer_cfg or getattr(policy, "transformer_optimizer_cfg", None)
         context_encoder = getattr(policy, "context_encoder", None)
         transformer_only = bool(getattr(policy, "transformer_actor_class_name", None))
-        if cfg is None or context_encoder is None:
-            raise ValueError("No transformer optimizer configuration or context encoder found")
+        use_transformer_optimizer = cfg is not None and (context_encoder is not None or transformer_only)
 
-        transformer_lr = self._get_cfg_value(cfg, "learning_rate", self.learning_rate)
-        if transformer_only:
-            self.learning_rate = transformer_lr
+        if use_transformer_optimizer:
+            transformer_lr = self._get_cfg_value(cfg, "learning_rate", self.learning_rate)
+            if transformer_only:
+                self.learning_rate = transformer_lr
 
-        # WARNING: if transformer_only is True, we are optimizing the actor parameters directly using transformer optimizer
-        if transformer_only:
-            encoder_params = list(policy.actor.parameters())
+            # WARNING: if transformer_only is True, we are optimizing the actor parameters directly using transformer optimizer
+            if transformer_only:
+                transformer_params = list(policy.actor.parameters())
+            else:
+                transformer_params = list(context_encoder.parameters())
+            if not transformer_params:
+                raise ValueError("No transformer parameters found")
+
+            transformer_param_ids = {id(param) for param in transformer_params}
+            policy_params = [param for param in policy.parameters() if id(param) not in transformer_param_ids]
+            if not policy_params:
+                raise ValueError("No policy parameters found")
+
+            policy_optimizer = optim.Adam(policy_params, lr=self.learning_rate)
+            transformer_optimizer = self._build_transformer_optimizer(cfg, transformer_params)
+            transformer_lr_scheduler = self._build_transformer_lr_scheduler(cfg, transformer_optimizer)
+
+            self.optimizer = CompositeOptimizer(
+                {
+                    "policy": policy_optimizer,
+                    "transformer": transformer_optimizer,
+                }
+            )
+            self.transformer_optimizer = transformer_optimizer
+            self.transformer_lr_scheduler = transformer_lr_scheduler
+            self.transformer_learning_rate = transformer_lr
+            self.use_transformer_adaptive_lr = transformer_lr_scheduler is None
+            self.policy_params = policy_params
+            self.encoder_params = transformer_params
+            self.transformer_max_grad_norm = self._get_cfg_value(cfg, "max_grad_norm", self.max_grad_norm)
         else:
-            encoder_params = list(context_encoder.parameters())
-        if not encoder_params:
-            raise ValueError("No encoder parameters found")
+            policy_params = list(policy.parameters())
+            if not policy_params:
+                raise ValueError("No policy parameters found")
+            policy_optimizer = optim.Adam(policy_params, lr=self.learning_rate)
+            self.optimizer = CompositeOptimizer({"policy": policy_optimizer})
+            self.transformer_optimizer = None
+            self.transformer_lr_scheduler = None
+            self.transformer_learning_rate = None
+            self.use_transformer_adaptive_lr = False
+            self.policy_params = policy_params
+            self.encoder_params = []
+            self.transformer_max_grad_norm = self.max_grad_norm
 
-        encoder_param_ids = {id(param) for param in encoder_params}
-        policy_params = [param for param in policy.parameters() if id(param) not in encoder_param_ids]
-        if not policy_params:
-            raise ValueError("No policy parameters found")
-
-        policy_optimizer = optim.Adam(policy_params, lr=self.learning_rate)
-        encoder_optimizer = self._build_transformer_optimizer(cfg, encoder_params)
-        transformer_lr_scheduler = self._build_transformer_lr_scheduler(cfg, encoder_optimizer)
-
-        self.optimizer = CompositeOptimizer(policy_optimizer, encoder_optimizer)
-        self.transformer_optimizer = encoder_optimizer
-        self.transformer_lr_scheduler = transformer_lr_scheduler
-        self.policy_params = policy_params
-        self.encoder_params = encoder_params
-        self.transformer_max_grad_norm = self._get_cfg_value(cfg, "max_grad_norm", self.max_grad_norm)
         self.last_encoder_grad_norm = 0.0
 
     def init_storage(
@@ -189,6 +244,14 @@ class PPOWithLongContext(PPO):
             return torch.cuda.amp.autocast(dtype=self.amp_dtype)
         # no-op context manager
         return torch.autograd.profiler.record_function("noop_amp_ctx")  # harmless, acts as context manager
+
+    def _apply_adaptive_lr(self, current_lr: float, kl_mean: torch.Tensor) -> float:
+        new_lr = current_lr
+        if kl_mean > self.desired_kl * 2.0:
+            new_lr = max(1e-6, current_lr / 1.25)
+        elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
+            new_lr = min(1e-2, current_lr * 1.25)
+        return new_lr
 
     def update(self):  # noqa: C901
         mean_value_loss = 0
@@ -352,18 +415,26 @@ class PPOWithLongContext(PPO):
                         kl_mean /= self.gpu_world_size
 
                     if self.gpu_global_rank == 0:
-                        if kl_mean > self.desired_kl * 2.0:
-                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
-                        elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                        self.learning_rate = self._apply_adaptive_lr(self.learning_rate, kl_mean)
+                        if self.use_transformer_adaptive_lr and self.transformer_learning_rate is not None:
+                            self.transformer_learning_rate = self._apply_adaptive_lr(
+                                self.transformer_learning_rate, kl_mean
+                            )
 
                     if self.is_multi_gpu:
                         lr_tensor = torch.tensor(self.learning_rate, device=self.device)
                         torch.distributed.broadcast(lr_tensor, src=0)
                         self.learning_rate = lr_tensor.item()
+                        if self.use_transformer_adaptive_lr and self.transformer_learning_rate is not None:
+                            transformer_lr_tensor = torch.tensor(
+                                self.transformer_learning_rate, device=self.device
+                            )
+                            torch.distributed.broadcast(transformer_lr_tensor, src=0)
+                            self.transformer_learning_rate = transformer_lr_tensor.item()
 
-                    for param_group in self.optimizer.policy_param_groups:
-                        param_group["lr"] = self.learning_rate
+                    self.optimizer.set_lr(self.learning_rate, keys=["policy"])
+                    if self.use_transformer_adaptive_lr and self.transformer_learning_rate is not None:
+                        self.optimizer.set_lr(self.transformer_learning_rate, keys=["transformer"])
 
             self.optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -375,8 +446,11 @@ class PPOWithLongContext(PPO):
                 self.reduce_parameters()
 
             nn.utils.clip_grad_norm_(self.policy_params, self.max_grad_norm)
-            encoder_grad_norm = nn.utils.clip_grad_norm_(self.encoder_params, self.transformer_max_grad_norm)
-            self.last_encoder_grad_norm = float(encoder_grad_norm)
+            if self.encoder_params:
+                encoder_grad_norm = nn.utils.clip_grad_norm_(self.encoder_params, self.transformer_max_grad_norm)
+                self.last_encoder_grad_norm = float(encoder_grad_norm)
+            else:
+                self.last_encoder_grad_norm = 0.0
 
             self.optimizer.step()
             # if self.rnd_optimizer:
@@ -410,7 +484,11 @@ class PPOWithLongContext(PPO):
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
             "encoder_grad_norm": mean_encoder_grad_norm,
-            "transformer_lr * 100": self.transformer_optimizer.param_groups[0]["lr"] * 100.0,
+            "transformer_lr * 100": (
+                self.transformer_optimizer.param_groups[0]["lr"] * 100.0
+                if self.transformer_optimizer is not None
+                else self.optimizer.get_lr("policy") * 100.0
+            ),
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss

@@ -1045,6 +1045,10 @@ class MultiResetManager(ManagerTermBase):
             self.success_monitor = success_monitor_cfg.class_type(success_monitor_cfg)
 
         self.task_id = torch.randint(0, self.num_tasks, (self.num_envs,), device=self.device)
+        self.last_state_indices = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
+
+        # expose on env so other components can reuse the reset indices
+        setattr(self._env, "multi_reset_manager", self)
 
     def __call__(
         self,
@@ -1087,10 +1091,47 @@ class MultiResetManager(ManagerTermBase):
             state_indices = torch.randint(
                 0, self.num_states[dataset_idx], (len(current_env_ids),), device=self._env.device
             )
+            self.last_state_indices[current_env_ids] = state_indices
             states_to_reset_from = sample_from_nested_dict(self.datasets[dataset_idx], state_indices)
             self._env.scene.reset_to(states_to_reset_from["initial_state"], env_ids=current_env_ids, is_relative=True)
 
         # Reset velocities
+        robot: Articulation = self._env.scene["robot"]
+        robot.set_joint_velocity_target(torch.zeros_like(robot.data.joint_vel[env_ids]), env_ids=env_ids)
+
+    def get_cached_state_indices(self, env_ids: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return cached dataset indices and state indices for envs."""
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self._env.device)
+        return self.task_id[env_ids].clone(), self.last_state_indices[env_ids].clone()
+
+    def load_saved_states(
+        self,
+        env_ids: torch.Tensor,
+        state_indices: torch.Tensor,
+        task_ids: torch.Tensor | None = None,
+    ) -> None:
+        """Reset envs to previously sampled states by index."""
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self._env.device)
+        if task_ids is None:
+            task_ids = self.task_id[env_ids]
+
+        # ensure tensors are on the correct device
+        env_ids = env_ids.to(self._env.device)
+        state_indices = state_indices.to(self._env.device)
+        task_ids = task_ids.to(self._env.device)
+
+        for dataset_idx in range(self.num_tasks):
+            mask = task_ids == dataset_idx
+            if not mask.any():
+                continue
+            current_env_ids = env_ids[mask]
+            current_state_indices = state_indices[mask]
+            states_to_reset_from = sample_from_nested_dict(self.datasets[dataset_idx], current_state_indices)
+            self._env.scene.reset_to(states_to_reset_from["initial_state"], env_ids=current_env_ids, is_relative=True)
+
+        # Reset velocities (match __call__)
         robot: Articulation = self._env.scene["robot"]
         robot.set_joint_velocity_target(torch.zeros_like(robot.data.joint_vel[env_ids]), env_ids=env_ids)
 

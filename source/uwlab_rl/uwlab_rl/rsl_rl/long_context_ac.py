@@ -9,7 +9,7 @@ from tensordict import TensorDict
 
 from rsl_rl.modules.actor_critic import ActorCritic, GSDENoiseDistribution
 from uwlab_rl.rsl_rl.distributions import IndependentCategoricalDistribution
-from .transformer_encoder import (
+from .transformers import (
     EpisodeEncoder,
     MergedTokenTransformerActor,
     TransformerActor,
@@ -128,7 +128,7 @@ class LongContextActorCritic(ActorCritic):
     demo_rewards is a tensor of shape (num_envs, max_length, num_rewards)
     demo_lengths is a tensor of shape (num_envs)
 
-    IMPORTANT: Obs will be altered in-place (if necessary) so that PPO will recognize the full context_obs
+    IMPORTANT: Obs will be altered in-place (if necessary) so that PPO will recognize the full context_obs (since it starts as a nested TensorDict, which is not compatible with PPO)
     this means it will be a concatenated tensor of shape (num_envs, max_length, num_obs + num_actions + num_rewards)
     we also need to add a length field to the obs tensor to indicate the length of the context
     """

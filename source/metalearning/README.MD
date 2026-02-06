@@ -38,10 +38,10 @@ python -m torch.distributed.run \
     --headless \
     --distributed \
     env.scene.insertive_object=rectangle \
-    env.scene.receptive_object=wall
+    env.scene.receptive_object=walldd
 
 running evals to see how well something tracks a demo:
-python scripts/reinforcement_learning/rsl_rl/eval_demo_tracking.py --task OmniFromDemo-UR5eRobotiq2f85-Eval-v0 --num_rollouts 50 --num_envs 32 --checkpoint cube_tracking_transformer_actor.pt --headless
+python scripts/reinforcement_learning/rsl_rl/eval_demo_tracking.py --task OmniFromDemo-UR5eRobotiq2f85-Eval-v0 --num_rollouts 50 --num_envs 32 --checkpoint cube_tracking_transformer_actor.pt --headless env.scene.insertive_object=rectangle env.scene.receptive_object=wall
 
 visualizing context + inference rollouts:
 python -m metalearning.tools.visualize_trajectory /path/to/episodes_000000.pt --episode-idx 3
