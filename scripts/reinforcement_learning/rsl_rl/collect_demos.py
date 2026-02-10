@@ -37,6 +37,18 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument(
+    "--save_raw_states",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Capture raw scene states during episodes (default: True).",
+)
+parser.add_argument(
+    "--state_capture_interval",
+    type=int,
+    default=4,
+    help="Interval (in steps) for raw state capture (default: 1).",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -265,7 +277,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     )
     progress_bar = tqdm(total=args_cli.num_demos, desc="Demos collected", unit="demos")
     manager_env = cast(ManagerBasedEnv, env.unwrapped)
-    state_storage = StateStorage(manager_env)
+    state_storage = StateStorage(
+        manager_env,
+        save_raw_states=args_cli.save_raw_states,
+        state_capture_interval=args_cli.state_capture_interval,
+    )
+    if args_cli.save_raw_states:
+        assert torch.all(
+            manager_env.episode_length_buf == 0
+        ), "Expected episode_length_buf to be 0 before first step."
+        state_storage.record_step(torch.arange(manager_env.num_envs, device=manager_env.device))
     success_term_name = from_demo_utils.find_success_term_name(manager_env)
     last_episode_count = 0
     global_step = 0
@@ -281,8 +302,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 actions = environment_noise.step_action(actions)
             # env stepping
             obs, rewards, dones, extras = env.step(actions)
-            if not state_storage._state_buffer: # type: ignore[attr-defined]
+            if not state_storage._state_buffer:  # type: ignore[attr-defined]
                 state_storage.capture(torch.arange(manager_env.num_envs, device=manager_env.device))
+            state_storage.record_step()
             demo_obs = previous_obs["demo"]
             debug_obs = previous_obs.get("debug") if isinstance(previous_obs, dict) else None
             debug_flat = _flatten_debug_obs(debug_obs)
@@ -304,6 +326,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 states, physics = state_storage.fetch(done_env_ids)
                 rollouts["states"] = states
                 rollouts["physics"] = physics
+                if args_cli.save_raw_states:
+                    rollouts["raw_states"] = state_storage.fetch_raw_states(done_env_ids)  # type: ignore[assignment]
                 episode_storage.add_episode(rollouts, env_ids=done_env_ids)
                 episode_returns, episode_success = from_demo_utils.collect_episode_metrics(
                     rollouts, done_env_ids, manager_env, success_term_name

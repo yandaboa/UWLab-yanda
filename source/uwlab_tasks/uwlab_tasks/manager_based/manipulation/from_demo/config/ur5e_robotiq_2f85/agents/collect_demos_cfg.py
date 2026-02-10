@@ -49,13 +49,13 @@ class CollectDemosPolicyRunnerCfg(RslRlOnPolicyRunnerCfg):
     noise: EnvironmentNoiseCfg = EnvironmentNoiseCfg(
         noise_object="noise_receptive",
         constant_noise=True,
-        bernoulli_noise_prob=0.6,
+        bernoulli_noise_prob=0.7,
         noise_frequency_distribution="bernoulli",
         noise_magnitude_distribution="uniform",
         max_noise_frequency = 1.0,
         min_noise_frequency = 0.0,
         mean_noise_magnitude = 0.0,
         std_noise_magnitude = 4.0,
-        min_noise_magnitude = 0.05,
+        min_noise_magnitude = 0.1,
         max_noise_magnitude = 0.2,
     )

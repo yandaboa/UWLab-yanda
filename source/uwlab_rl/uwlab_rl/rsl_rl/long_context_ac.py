@@ -50,6 +50,8 @@ class LongContextActorCritic(ActorCritic):
         obs_token_count: int = 4,
         transformer_actor_class_name: str | None = None,
         optimizer: Optional[Any] = None,
+        log_attention_entropy: bool = False,
+        attention_entropy_interval: int = 0,
         **kwargs: dict[str, Any],
     ) -> None:
         super().__init__(
@@ -116,6 +118,9 @@ class LongContextActorCritic(ActorCritic):
         self.current_obs_proj: Optional[nn.Linear] = None
         self.token_embed_dim: Optional[int] = None
         self.current_obs_dim: Optional[int] = None
+        self.log_attention_entropy = bool(log_attention_entropy)
+        self.attention_entropy_interval = int(attention_entropy_interval or 0)
+        self.load_actor_only = False
 
         if self.context_keys and isinstance(self.context_keys, str) and self.context_keys in obs:
             self._initialize_transformer(obs)
@@ -141,7 +146,7 @@ class LongContextActorCritic(ActorCritic):
             demo_rewards = context_obs["context_rewards"]
             demo_lengths = context_obs["context_lengths"]
             # max_length = demo_lengths.max()
-            max_length = 160
+            max_length = 100
             demo_obs = demo_obs.reshape(demo_obs.shape[0], max_length, -1)
             demo_actions = demo_actions.reshape(demo_actions.shape[0], max_length, -1)
             demo_rewards = demo_rewards.reshape(demo_rewards.shape[0], max_length, -1)
@@ -163,11 +168,31 @@ class LongContextActorCritic(ActorCritic):
     def _resolve_context_lengths(self, demo_lengths: torch.Tensor) -> tuple[torch.Tensor, int]:
         lengths = demo_lengths.to(dtype=torch.long).squeeze(-1)
         max_context_length = int(lengths.max().item())
-        # max_context_length = 160
+        # max_context_length = 100
         if self.context_length_override is not None:
             max_context_length = min(max_context_length, self.context_length_override)
             lengths = torch.clamp(lengths, max=max_context_length)
         return lengths, max_context_length
+
+    def enable_actor_only_loading(self, enabled: bool = True) -> None:
+        """Enable loading only actor-related parameters from a checkpoint."""
+        self.load_actor_only = bool(enabled)
+
+    def _filter_actor_state_dict(self, state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        return {
+            key: value
+            for key, value in state_dict.items()
+            if not key.startswith("critic.")
+            and not key.startswith("critic_obs_normalizer.")
+        }
+
+    def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
+        """Load parameters, optionally skipping critic weights."""
+        if self.load_actor_only:
+            filtered_state = self._filter_actor_state_dict(state_dict)
+            nn.Module.load_state_dict(self, filtered_state, strict=False)
+            return False
+        return super().load_state_dict(state_dict, strict=strict)
     
     def _initialize_transformer(self, obs: TensorDict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         demo_obs, demo_actions, demo_rewards, demo_lengths = self._process_context_obs(obs)
@@ -327,6 +352,16 @@ class LongContextActorCritic(ActorCritic):
             need_weights=False,
         )
         return attn_out.mean(dim=1)
+
+    def get_attention_entropy_per_head(self) -> Optional[torch.Tensor]:
+        """Return cached attention entropy per layer/head."""
+        if self._use_transformer_actor():
+            if not isinstance(self.actor, TransformerActor):
+                return None
+            return self.actor.encoder.get_last_attention_entropy_per_head()
+        if self.context_encoder is None or not isinstance(self.context_encoder, EpisodeEncoder):
+            return None
+        return self.context_encoder.get_last_attention_entropy_per_head()
 
     def get_actor_obs(self, obs: TensorDict) -> torch.Tensor:
         """Return policy observations augmented with context."""

@@ -73,3 +73,13 @@ gym.register(
         ),
     },
 )
+
+gym.register(
+    id="OmniFromDemo-UR5eRobotiq2f85-DistillationEval-v0",
+    entry_point="uwlab_tasks.manager_based.manipulation.from_demo.env:FromDemoEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.distillation_rl_state_cfg:Ur5eRobotiq2f85RelJointPosFromDemoDistillationEvalCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.distillation_rsl_rl_cfg:DistillationLongContextRunnerCfg",
+    },
+)

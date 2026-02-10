@@ -1,5 +1,5 @@
 Collecting demos:
-python scripts/reinforcement_learning/rsl_rl/collect_demos.py     --task OmniFromDemo-UR5eRobotiq2f85-CollectDemos-v0     --num_envs 2     --checkpoint rectangle_state_rl_expert.pt     env.scene.insertive_object=rectangle     env.scene.receptive_object=wall --headless
+python scripts/reinforcement_learning/rsl_rl/collect_demos.py     --task OmniFromDemo-UR5eRobotiq2f85-CollectDemos-v0     --num_envs 2     --checkpoint peg_state_rl_expert.pt     env.scene.insertive_object=peg     env.scene.receptive_object=peghole --headless --num_demos 4 --max_demos_before_saving 4
 
 to debug, just add ./debug.sh in front and take out python
 
@@ -9,8 +9,17 @@ scripts/reinforcement_learning/rsl_rl/train.py \
     --num_envs 128 \
     --logger wandb \
     --headless \
-    env.scene.insertive_object=rectangle \
-    env.scene.receptive_object=wall
+    env.scene.insertive_object=peg \
+    env.scene.receptive_object=peghole
+
+distillation training:
+scripts/reinforcement_learning/rsl_rl/train.py \
+    --task OmniFromDemo-UR5eRobotiq2f85-Distillation-v0 \
+    --num_envs 128 \
+    --logger wandb \
+    --headless \
+    env.scene.insertive_object=peg \
+    env.scene.receptive_object=peghole
 
 distributed training:
 python -m torch.distributed.run \
@@ -22,8 +31,8 @@ python -m torch.distributed.run \
     --logger wandb \
     --headless \
     --distributed \
-    env.scene.insertive_object=rectangle \
-    env.scene.receptive_object=wall
+    env.scene.insertive_object=peg \
+    env.scene.receptive_object=peghole
 
 if training won't start because the port is already taken, pass in --master_port 29501 before  scripts/reinforcement_learning/rsl_rl/train.py
 

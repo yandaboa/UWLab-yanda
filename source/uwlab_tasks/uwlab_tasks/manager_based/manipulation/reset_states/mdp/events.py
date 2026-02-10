@@ -12,6 +12,7 @@ import tempfile
 import torch
 import trimesh
 import trimesh.transformations as tra
+from typing import Any
 
 import carb
 import isaaclab.sim as sim_utils
@@ -1134,6 +1135,32 @@ class MultiResetManager(ManagerTermBase):
         # Reset velocities (match __call__)
         robot: Articulation = self._env.scene["robot"]
         robot.set_joint_velocity_target(torch.zeros_like(robot.data.joint_vel[env_ids]), env_ids=env_ids)
+
+    def load_raw_states(self, env_ids: torch.Tensor, raw_states: list[dict[str, Any]]) -> None:
+        """Reset envs to raw states captured from episodes."""
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self._env.device)
+        if not raw_states:
+            return
+        if len(raw_states) != len(env_ids):
+            raise ValueError("raw_states length must match env_ids length.")
+
+        def _stack_state_dicts(states: list[dict[str, Any]], device: torch.device) -> dict[str, Any]:
+            first = states[0]
+            result: dict[str, Any] = {}
+            for key, value in first.items():
+                if isinstance(value, dict):
+                    result[key] = _stack_state_dicts([s[key] for s in states], device)
+                elif isinstance(value, torch.Tensor):
+                    stacked = torch.stack([s[key] for s in states], dim=0).to(device)
+                    result[key] = stacked
+                else:
+                    raise TypeError(f"Unsupported raw state type: {type(value)}")
+            return result
+
+        env_ids = env_ids.to(self._env.device)
+        state_batch = _stack_state_dicts(raw_states, self._env.device)
+        self._env.scene.reset_to(state_batch, env_ids=env_ids, is_relative=True)
 
 
 def sample_state_data_set(episode_data: dict, idx: torch.Tensor, device: torch.device) -> dict:

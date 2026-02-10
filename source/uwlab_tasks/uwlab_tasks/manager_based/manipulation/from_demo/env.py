@@ -26,6 +26,10 @@ class DemoTrackingContext:
         device: str | torch.device | None = None,
     ):
         self._env = env
+        self.use_raw_states = bool(params.get("use_raw_states", False))
+        self.pending_raw_env_ids: torch.Tensor | None = None
+        self.pending_raw_timesteps: torch.Tensor | None = None
+        self.start_timesteps: torch.Tensor = torch.zeros((num_envs,), device=device, dtype=torch.int64)
         resolved_num_envs = num_envs if num_envs is not None else env.num_envs
         resolved_device = device if device is not None else env.device
         episode_paths = params.get("episode_paths", [])
@@ -64,8 +68,8 @@ class DemoTrackingContext:
             self.demo_obs_term_order,
             self.demo_obs_concat_dim,
         ) = _infer_demo_obs_spec(self.episodes)
-        # override the max length to 160
-        self.demo_obs_max_len = 160
+        # override the max length to 100
+        self.demo_obs_max_len = 100
         self.demo_obs, self.demo_obs_dict = _allocate_demo_obs_buffers(
             resolved_num_envs,
             self.demo_obs_max_len,
@@ -131,7 +135,28 @@ class DemoTrackingContext:
         self.demo_actions[env_ids_index] = padded_actions
         self.demo_rewards[env_ids_index] = padded_rewards
         multi_reset_manager = getattr(self._env, "multi_reset_manager", None)
-        if _is_multi_reset_state(states) and multi_reset_manager is not None:
+        if self.use_raw_states:
+            if multi_reset_manager is None:
+                raise ValueError("Raw-state reset requires env.multi_reset_manager to be available.")
+            raw_state_entries: list[dict[str, Any]] = []
+            raw_timesteps: list[int] = []
+            for episode in selected:
+                raw_states = episode.get("raw_states")
+                if not isinstance(raw_states, list) or not raw_states:
+                    raise ValueError("Requested raw-state reset but episode has no raw_states.")
+                sample_idx = int(torch.randint(0, len(raw_states), (1,), device=self._env.device).item())
+                entry = raw_states[sample_idx]
+                if not isinstance(entry, dict) or "state" not in entry or "timestep" not in entry:
+                    raise ValueError("Invalid raw_states entry format.")
+                raw_state_entries.append(entry["state"])
+                raw_timesteps.append(int(entry["timestep"]))
+            multi_reset_manager.load_raw_states(env_ids, raw_state_entries)
+            self.pending_raw_env_ids = env_ids.clone()
+            self.pending_raw_timesteps = torch.tensor(
+                raw_timesteps, device=self._env.device, dtype=self._env.episode_length_buf.dtype
+            )
+        elif _is_multi_reset_state(states) and multi_reset_manager is not None:
+            assert "multi_reset_task_id" in states and "multi_reset_state_index" in states
             task_ids = states["multi_reset_task_id"]
             state_indices = states["multi_reset_state_index"]
             multi_reset_manager.load_saved_states(env_ids, state_indices, task_ids=task_ids)
@@ -167,7 +192,17 @@ class FromDemoEnv(ManagerBasedRLEnv):
     def _reset_idx(self, env_ids):
         """Run custom post-reset events after base reset."""
         super()._reset_idx(env_ids)
-        self.event_manager.apply(mode="post_reset", env_ids=env_ids)
+        # we set the timestep here because the env sets timestep to 0 after reset
+        context = getattr(self, "context", None)
+        if context is not None:
+            pending_env_ids = getattr(context, "pending_raw_env_ids", None)
+            pending_raw_timesteps = getattr(context, "pending_raw_timesteps", None)
+            if pending_env_ids is not None and pending_raw_timesteps is not None:
+                self.episode_length_buf[pending_env_ids] = pending_raw_timesteps
+                context.start_timesteps[pending_env_ids] = pending_raw_timesteps
+                context.pending_raw_env_ids = None
+                context.pending_raw_timesteps = None
+        # self.event_manager.apply(mode="post_reset", env_ids=env_ids)
 
     def _build_demo_context(
         self, num_envs: int | None, device: str | torch.device | None
@@ -181,6 +216,7 @@ class FromDemoEnv(ManagerBasedRLEnv):
                 "episode_paths": getattr(self.context_cfg, "episode_paths", None),
                 "state_noise_scale": getattr(self.context_cfg, "state_noise_scale", None),
                 "download_dir": getattr(self.context_cfg, "download_dir", None),
+                "use_raw_states": getattr(self.context_cfg, "use_raw_states", None),
             }
         return DemoTrackingContext(self, params, num_envs=num_envs, device=device)
 

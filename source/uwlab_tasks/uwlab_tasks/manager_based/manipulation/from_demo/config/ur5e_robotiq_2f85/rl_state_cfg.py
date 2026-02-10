@@ -281,7 +281,7 @@ class OmniResetTrainEventCfg(BaseEventCfg):
     )
 
 @configclass
-class TrainEventCfg:
+class BaseFromDemoEventCfg:
 
     reset_everything = EventTerm(func=omni_reset_mdp.reset_scene_to_default, mode="reset", params={})
 
@@ -291,15 +291,19 @@ class TrainEventCfg:
         params={
             "base_paths": [
                 f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEAnywhere",
+                # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectRestingEEGrasped",
+                # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEGrasped",
+                # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectPartiallyAssembledEEGrasped",
             ],
             "probs": [1.0],
+            # "probs": [0.25, 0.25, 0.25, 0.25],
             "success": "env.reward_manager.get_term_cfg('progress_context').func.success",
         },
     )
 
 
 @configclass
-class FromDemoTrainEventCfg(TrainEventCfg):
+class FromDemoTrainEventCfg(BaseFromDemoEventCfg):
     """Training events with from-demo context."""
 
     # random_pushes = EventTerm(
@@ -319,7 +323,22 @@ class FromDemoTrainEventCfg(TrainEventCfg):
     )
 
 @configclass
-class FromDemoEvalEventCfg:
+class FromDemoPriviledgedTrainEventCfg(FromDemoTrainEventCfg):
+    """Training events with from-demo context."""
+
+    # randomly sample pushes to the robot end effector
+    random_pushes = EventTerm(
+        func=mdp_events.push_by_setting_velocity,
+        mode="interval",
+        interval_range_s=(1.0, 2.0),
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+            "velocity_range": {"x": (-0.2, 0.2), "y": (-0.2, 0.2)},
+        },
+    )
+
+@configclass
+class FromDemoEvalEventCfg(BaseFromDemoEventCfg):
     """Evaling models to track a demo."""
 
     resample_episode = EventTerm(
@@ -338,8 +357,12 @@ class EvalEventCfg(BaseEventCfg):
         params={
             "base_paths": [
                 f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEAnywhere",
+                # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectRestingEEGrasped",
+                # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEGrasped",
+                # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectPartiallyAssembledEEGrasped",
             ],
             "probs": [1.0],
+            # "probs": [0.25, 0.25, 0.25, 0.25],
             "success": "env.reward_manager.get_term_cfg('progress_context').func.success",
         },
     )
@@ -814,6 +837,13 @@ class PriviledgedTrainingObservationsCfg(TrainingObservationsCfg):
         context_actions = ObsTerm(
             func=from_demo_mdp.get_supervision_demo_actions,
         )
+        end_effector_vel_lin_ang_b = ObsTerm(
+            func=omni_reset_mdp.asset_link_velocity_in_root_asset_frame,
+            params={
+                "target_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+                "root_asset_cfg": SceneEntityCfg("robot"),
+            },
+        )
         # context_rewards = ObsTerm(
         #     func=from_demo_mdp.get_last_demo_rewards,
         # )
@@ -970,20 +1000,19 @@ class PriviledgedFromDemoRewardsCfg(FromDemoRewardsCfg):
 
 @configclass
 class DemoContextCfg:
-    # episode_paths: str = "episodes/20260128_011438/episodes_000000.pt"
-    episode_paths: str = "episodes/20260203_215248/episodes_000000.pt"
-    # episode_paths: list[str] = [ 
-    #     "episodes/20260202_040215/episodes_000000.pt",
-    #     "episodes/20260202_040215/episodes_000001.pt",
-    #     "episodes/20260202_040215/episodes_000002.pt",
-    #     "episodes/20260202_040215/episodes_000003.pt",
-    #     "episodes/20260202_040215/episodes_000004.pt",
-    #     "episodes/20260202_040215/episodes_000005.pt",
-    #     "episodes/20260202_040215/episodes_000006.pt",
-    #     "episodes/20260202_040215/episodes_000007.pt",
-    #     "episodes/20260202_040215/episodes_000008.pt",
-    #     "episodes/20260202_040215/episodes_000009.pt",
-    # ]
+    # episode_paths: str = "episodes/20260208_025923/episodes_000000.pt"
+    episode_paths: list[str] = [
+        "episodes/20260208_011257/episodes_000000.pt",
+        # "episodes/20260208_011257/episodes_000001.pt",
+        # "episodes/20260208_011257/episodes_000002.pt",
+        # "episodes/20260208_011257/episodes_000003.pt",
+        # "episodes/20260208_011257/episodes_000004.pt",
+        # "episodes/20260208_011257/episodes_000005.pt",
+        # "episodes/20260208_011257/episodes_000006.pt",
+        # "episodes/20260208_011257/episodes_000007.pt",
+        # "episodes/20260208_011257/episodes_000008.pt",
+        # "episodes/20260208_011257/episodes_000009.pt",
+    ]
     # episode_paths: list[str] = [ # peg tracking
     #     "episodes/20260202_173353/episodes_000000.pt",
     #     "episodes/20260202_173353/episodes_000001.pt",
@@ -998,41 +1027,35 @@ class DemoContextCfg:
     # ]
     state_noise_scale: float = 0.0
     download_dir: str | None = None
+    use_raw_states: bool = True
 
 @configclass
 class DemoContextPriviledgedCfg(DemoContextCfg):
     """Context for privileged training."""
-    episode_paths: str = "episodes/20260203_215248/episodes_000000.pt"
-    # episode_paths: list[str] = [
-    #     "episodes/20260203_043700/episodes_000000.pt",
-    #     "episodes/20260203_043700/episodes_000001.pt",
-    #     "episodes/20260203_043700/episodes_000002.pt",
-    #     "episodes/20260203_043700/episodes_000003.pt",
-    #     "episodes/20260203_043700/episodes_000004.pt",
-    #     "episodes/20260203_043700/episodes_000005.pt",
-    #     "episodes/20260203_043700/episodes_000006.pt",
-    #     "episodes/20260203_043700/episodes_000007.pt",
-    #     "episodes/20260203_043700/episodes_000008.pt",
-    #     "episodes/20260203_043700/episodes_000009.pt",
-    #     "episodes/20260203_043700/episodes_000010.pt",
-    #     "episodes/20260203_043700/episodes_000011.pt",
-    #     "episodes/20260203_043700/episodes_000012.pt",
-    #     "episodes/20260203_043700/episodes_000013.pt",
-    #     "episodes/20260203_043700/episodes_000014.pt",
-    #     "episodes/20260203_043700/episodes_000015.pt",
-    #     "episodes/20260203_043700/episodes_000016.pt",
-    #     "episodes/20260203_043700/episodes_000017.pt",
-    #     # "episodes/20260203_014605/episodes_000000.pt",
-    # ]
+    # episode_paths: str = "episodes/20260208_011257/episodes_000000.pt"
+    episode_paths: list[str] = [
+        "episodes/20260208_011257/episodes_000000.pt",
+        "episodes/20260208_011257/episodes_000001.pt",
+        "episodes/20260208_011257/episodes_000002.pt",
+        "episodes/20260208_011257/episodes_000003.pt",
+        "episodes/20260208_011257/episodes_000004.pt",
+        "episodes/20260208_011257/episodes_000005.pt",
+        "episodes/20260208_011257/episodes_000006.pt",
+        "episodes/20260208_011257/episodes_000007.pt",
+        "episodes/20260208_011257/episodes_000008.pt",
+        "episodes/20260208_011257/episodes_000009.pt",
+    ]
+    use_raw_states=False
 
 @configclass
 class DemoEvalContextCfg:
-    episode_paths: str = "episodes/20260203_215248/episodes_000000.pt" # single episode of peg insertion
+    episode_paths: str = "episodes/20260208_011257/episodes_000000.pt" # single episode of peg insertion
     # episode_paths: list[str] = [
     #     "episodes/20260128_011438/episodes_000000.pt",
     # ]
     state_noise_scale: float = 0.0
     download_dir: str | None = None
+    use_raw_states: bool = False
 
 @configclass
 class TerminationsCfg:
@@ -1132,7 +1155,7 @@ class Ur5eRobotiq2f85RlStateCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self):
         self.decimation = 12
-        self.episode_length_s = 16.0
+        self.episode_length_s = 10.0
         # simulation settings
         self.sim.dt = 1 / 120.0
 
@@ -1218,7 +1241,7 @@ class Ur5eRobotiq2f85RelJointPosFromDemoTrainCfg(Ur5eRobotiq2f85RlStateCfg):
 class Ur5eRobotiq2f85RelJointPosFromDemoPriviledgedTrainCfg(Ur5eRobotiq2f85RlStateCfg):
     """Demo collection configuration for Relative Joint Position action space."""
 
-    events: FromDemoTrainEventCfg = FromDemoTrainEventCfg()
+    events: FromDemoPriviledgedTrainEventCfg = FromDemoPriviledgedTrainEventCfg()
     actions: Ur5eRobotiq2f85RelativeOSCAction = Ur5eRobotiq2f85RelativeOSCAction()
     rewards: PriviledgedFromDemoRewardsCfg = PriviledgedFromDemoRewardsCfg()
     observations: PriviledgedTrainingObservationsCfg = PriviledgedTrainingObservationsCfg()

@@ -7,7 +7,7 @@ from tensordict import TensorDict
 from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent
 from rsl_rl.runners.distillation_runner import DistillationRunner as BaseDistillationRunner
 
-from uwlab_rl.rsl_rl.distillation import Distillation
+from uwlab_rl.rsl_rl.distillation import DaggerDistillation, Distillation
 from uwlab_rl.rsl_rl.student_teacher import LongContextStudentTeacher
 from uwlab_rl.rsl_rl.utils import normalize_cfg
 
@@ -44,7 +44,10 @@ class DistillationRunner(BaseDistillationRunner):
         ).to(self.device)
 
         alg_class_name = alg_cfg.pop("class_name")
-        alg_class_map: dict[str, type] = {"Distillation": Distillation}
+        alg_class_map: dict[str, type] = {
+            "Distillation": Distillation,
+            "DaggerDistillation": DaggerDistillation,
+        }
         alg_class = alg_class_map.get(alg_class_name)
         if alg_class is None:
             alg_class = eval(alg_class_name)

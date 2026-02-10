@@ -52,7 +52,7 @@ class PPOWithPriviledgedRunnerCfg(RslRlOnPolicyRunnerCfg):
         max_grad_norm=1.0,
     )
     trajectory_viz = TrajectoryVizCfg(
-        enable=True,
+        enable=False,
         log_every_iters=100,
         max_pairs_per_log=4,
         obs_key="debug/end_effector_pose",

@@ -1,4 +1,4 @@
-"""Custom RSL-RL runner with trajectory visualization hooks."""
+"""Custom RSL-RL runner with tracking hooks."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from metalearning.logger import WandbTrajectoryLogger
 from metalearning.trajectory_logging import TrajectoryPairCollector
 
 
-class TrajectoryOnPolicyRunner(OnPolicyRunner):
+class TrackingOnPolicyRunner(OnPolicyRunner):
     """On-policy runner that logs demo-vs-rollout trajectories."""
 
     def __init__(self, env, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
@@ -28,6 +28,8 @@ class TrajectoryOnPolicyRunner(OnPolicyRunner):
         self._trajectory_logger: WandbTrajectoryLogger | None = None
         self._next_viz_iter: int | None = None
         self._prev_dones: torch.Tensor | None = None
+        self._attention_entropy_enabled = bool(getattr(self.alg.policy, "log_attention_entropy", False))
+        self._attention_entropy_interval = int(getattr(self.alg.policy, "attention_entropy_interval", 0) or 0)
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         # Initialize writer
@@ -76,6 +78,7 @@ class TrajectoryOnPolicyRunner(OnPolicyRunner):
                 if self._trajectory_collector is not None and not self._trajectory_collector.is_listening:
                     self._trajectory_collector.arm()
                 self._next_viz_iter = it + int(self._trajectory_cfg.get("log_every_iters", 1))
+            logged_attention_entropy = False
 
             # Rollout
             with torch.inference_mode():
@@ -87,6 +90,8 @@ class TrajectoryOnPolicyRunner(OnPolicyRunner):
                     obs_before_env = obs_env
                     # Sample actions
                     actions = self.alg.act(obs)
+                    if self._should_log_attention_entropy(it, logged_attention_entropy):
+                        logged_attention_entropy = self._log_attention_entropy(it)
                     # Step the environment
                     obs_env, rewards_env, dones_env, extras = self.env.step(actions.to(self.env.device))
                     # Move to device
@@ -195,3 +200,36 @@ class TrajectoryOnPolicyRunner(OnPolicyRunner):
             save_pairs=bool(self._trajectory_cfg.get("save_pairs", False)),
             max_pairs_per_log=max_pairs,
         )
+
+    def _should_log_attention_entropy(self, it: int, already_logged: bool) -> bool:
+        if already_logged:
+            return False
+        if not self._attention_entropy_enabled or self._attention_entropy_interval <= 0:
+            return False
+        if self.is_distributed and self.gpu_global_rank != 0:
+            return False
+        if self.log_dir is None or self.disable_logs or self.writer is None:
+            return False
+        return it % self._attention_entropy_interval == 0
+
+    def _log_attention_entropy(self, it: int) -> bool:
+        getter = getattr(self.alg.policy, "get_attention_entropy_per_head", None)
+        if not callable(getter):
+            return False
+        entropy = getter()
+        if entropy is None or entropy.numel() == 0:
+            return False
+        if entropy.ndim == 1:
+            for head_idx, value in enumerate(entropy):
+                self.writer.add_scalar(f"AttentionEntropy/head_{head_idx}", value.item(), it)
+            return True
+        if entropy.ndim == 2:
+            for layer_idx, layer_entropy in enumerate(entropy):
+                for head_idx, value in enumerate(layer_entropy):
+                    self.writer.add_scalar(
+                        f"AttentionEntropy/layer_{layer_idx}/head_{head_idx}",
+                        value.item(),
+                        it,
+                    )
+            return True
+        return False

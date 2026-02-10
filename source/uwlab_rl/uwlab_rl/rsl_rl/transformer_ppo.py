@@ -156,6 +156,8 @@ class PPOWithLongContext(PPO):
             self.transformer_max_grad_norm = self.max_grad_norm
 
         self.last_encoder_grad_norm = 0.0
+        self.log_attention_entropy = bool(getattr(policy, "log_attention_entropy", False))
+        self.attention_entropy_interval = int(getattr(policy, "attention_entropy_interval", 0) or 0)
 
     def init_storage(
         self,
@@ -268,7 +270,6 @@ class PPOWithLongContext(PPO):
             mean_symmetry_loss = None
 
         generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-
         for batch in generator:
             if len(batch) == 11:
                 (

@@ -19,6 +19,8 @@ from .rl_state_cfg import (
     PrivilegedPolicyCfg,
     TrainingObservationsCfg,
     DemoContextCfg,
+    FromDemoEvalEventCfg,
+    DemoEvalContextCfg,
 )
 
 @configclass
@@ -44,3 +46,10 @@ class Ur5eRobotiq2f85RelJointPosFromDemoDistillationCfg(Ur5eRobotiq2f85RlStateCf
     def __post_init__(self):
         super().__post_init__()
         self.scene.robot = EXPLICIT_UR5E_ROBOTIQ_2F85.replace(prim_path="{ENV_REGEX_NS}/Robot")
+
+@configclass
+class Ur5eRobotiq2f85RelJointPosFromDemoDistillationEvalCfg(Ur5eRobotiq2f85RelJointPosFromDemoDistillationCfg):
+    """Evaluation configuration for distillation."""
+
+    events: FromDemoEvalEventCfg = FromDemoEvalEventCfg()
+    context: DemoEvalContextCfg = DemoEvalContextCfg()

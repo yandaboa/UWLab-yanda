@@ -69,23 +69,27 @@ class TransformerBlock(nn.Module):
         self,
         x: torch.Tensor,
         padding_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        return_attention: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """Apply attention and feedforward updates."""
         attn_mask = torch.jit.annotate(Optional[torch.Tensor], None)
         if self.causal:
             assert self.causal_mask is not None
             attn_mask = self.causal_mask[: x.shape[1], : x.shape[1]]
         norm_x = self.norm1(x)
-        attention_out, _ = self.attention(
+        attention_out, attn_weights = self.attention(
             query=norm_x,
             key=norm_x,
             value=norm_x,
             attn_mask=attn_mask,
             key_padding_mask=padding_mask,
-            need_weights=False,
+            need_weights=return_attention,
+            average_attn_weights=False,
         )
         x = x + self.drop(attention_out)
         x = x + self.mlp(self.norm2(x))
+        if return_attention:
+            return x, attn_weights
         return x
 
 
@@ -104,10 +108,13 @@ class TransformerEncoder(nn.Module):
         residual_dropout: float = 0.0,
         embedding_dropout: float = 0.1,
         causal: bool = True,
+        attention_entropy_sample_ratio: float = 0.1,
     ) -> None:
         super().__init__()
         if embedding_dim is None:
             embedding_dim = hidden_dim
+        if not (0.0 < attention_entropy_sample_ratio <= 1.0):
+            raise ValueError("attention_entropy_sample_ratio must be in (0, 1].")
         self.input_proj = nn.Linear(input_dim, embedding_dim)
         self.pos_emb = PositionalEncoding(hidden_dim=embedding_dim, max_len=max_len)
         self.embed_proj = torch.jit.annotate(Optional[nn.Linear], None)
@@ -116,6 +123,7 @@ class TransformerEncoder(nn.Module):
 
         self.hidden_dim = hidden_dim
         self.embedding_dim = embedding_dim
+        self.attention_entropy_sample_ratio = attention_entropy_sample_ratio
         self.emb_drop = nn.Dropout(embedding_dropout)
         self.blocks = nn.ModuleList(
             [
@@ -130,6 +138,7 @@ class TransformerEncoder(nn.Module):
                 for _ in range(num_layers)
             ]
         )
+        self.register_buffer("_last_attention_entropy_per_head", torch.empty(0), persistent=False)
 
     def forward(
         self,
@@ -142,9 +151,48 @@ class TransformerEncoder(nn.Module):
         x = self.emb_drop(x)
         if self.embed_proj is not None:
             x = self.embed_proj(x)
+        entropies = []
         for block in self.blocks:
-            x = block(x, padding_mask=padding_mask)
+            x, attn_weights = block(x, padding_mask=padding_mask, return_attention=True)
+            with torch.no_grad():
+                entropies.append(
+                    self._attention_entropy_per_head(
+                        attn_weights,
+                        padding_mask,
+                        sample_ratio=self.attention_entropy_sample_ratio,
+                    )
+                )
+        if entropies:
+            self._last_attention_entropy_per_head = torch.stack(entropies, dim=0)
         return x
+
+    def get_last_attention_entropy_per_head(self) -> torch.Tensor:
+        """Return cached attention entropy per layer/head."""
+        return self._last_attention_entropy_per_head
+
+    @staticmethod
+    def _attention_entropy_per_head(
+        attn_weights: torch.Tensor,
+        padding_mask: Optional[torch.Tensor],
+        sample_ratio: float = 1.0,
+    ) -> torch.Tensor:
+        eps = 1.0e-8
+        if sample_ratio < 1.0:
+            batch_size = attn_weights.shape[0]
+            num_samples = max(1, int(batch_size * sample_ratio))
+            sample_idx = torch.randperm(batch_size, device=attn_weights.device)[:num_samples]
+            # Subsample batch elements for entropy estimation (advanced indexing).
+            attn_weights = attn_weights.index_select(dim=0, index=sample_idx)
+            if padding_mask is not None:
+                padding_mask = padding_mask.index_select(dim=0, index=sample_idx)
+        weights = attn_weights.clamp_min(eps)
+        entropy = -(weights * weights.log()).sum(dim=-1)
+        if padding_mask is not None:
+            valid = ~padding_mask
+            entropy = entropy * valid.unsqueeze(1)
+            denom = valid.sum().clamp_min(1).to(entropy.dtype).unsqueeze(0) * entropy.shape[1]
+            return entropy.sum(dim=(0, 2)) / denom
+        return entropy.mean(dim=(0, 2))
 
 
 class EpisodeEncoder(TransformerEncoder):
@@ -218,6 +266,7 @@ class EpisodeEncoder(TransformerEncoder):
         if batch_shape:
             x = x.reshape(*batch_shape, seq_len, x.shape[-1])
         return x
+
 
 
 class TransformerActor(nn.Module):

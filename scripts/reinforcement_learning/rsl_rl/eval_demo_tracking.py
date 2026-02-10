@@ -65,15 +65,18 @@ from typing import Any, Mapping, cast
 
 import torch
 
-from rsl_rl.runners import DistillationRunner, OnPolicyRunner
+from rsl_rl.runners import OnPolicyRunner
 
 from uwlab_rl.rsl_rl.transformer_ppo import PPOWithLongContext
 from uwlab_rl.rsl_rl.long_context_ac import LongContextActorCritic
+from uwlab_rl.rsl_rl.actor_critic import ActorCritic
+from uwlab_rl.rsl_rl.distillation_runner import DistillationRunner
 
 import importlib
 runner_mod = importlib.import_module("rsl_rl.runners.on_policy_runner")
 runner_mod.LongContextActorCritic = LongContextActorCritic # type: ignore
 runner_mod.PPOWithLongContext = PPOWithLongContext # type: ignore
+runner_mod.ActorCritic = ActorCritic # type: ignore
 
 from isaaclab.envs import (
     DirectMARLEnv,
@@ -212,6 +215,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         runner = DistillationRunner(env, agent_cfg_dict, log_dir=None, device=agent_cfg.device)
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
+    if hasattr(runner, "alg") and hasattr(runner.alg, "policy"):
+        policy = runner.alg.policy
+        if hasattr(policy, "enable_actor_only_loading"):
+            policy.enable_actor_only_loading(True)
     runner.load(resume_path)
 
     # obtain the trained policy for inference

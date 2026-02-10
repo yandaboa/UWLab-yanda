@@ -97,4 +97,11 @@ class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
         #     use_amp=True,
         # ),
     )
-    trajectory_viz: TrajectoryVizCfg = TrajectoryVizCfg()
+    trajectory_viz: TrajectoryVizCfg = TrajectoryVizCfg(
+        enable=False,
+        log_every_iters=50,
+        max_pairs_per_log=4,
+        obs_key="debug/end_effector_pose",
+        demo_obs_key="end_effector_pose",
+        save_pairs=False,
+    )

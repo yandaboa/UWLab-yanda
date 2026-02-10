@@ -53,6 +53,7 @@ class OffPolicyAlgorithmCfg:
     behavior_cloning_cfg: BehaviorCloningCfg | None = None
     """The configuration for the offline behavior cloning(dagger)."""
 
+
 @configclass
 class RslRlFancyActorCriticCfg(RslRlPpoActorCriticCfg):
     """Configuration for the fancy actor-critic networks."""
@@ -140,6 +141,12 @@ class RslRlFancyTransformerHistoryActorCriticCfg(RslRlFancyActorCriticCfg):
 
     optimizer: TransformerOptimizerCfg = TransformerOptimizerCfg()
     """The optimizer for the transformer history actor-critic."""
+
+    log_attention_entropy: bool = False
+    """Whether to log transformer attention entropy during training."""
+
+    attention_entropy_interval: int = 0
+    """Log attention entropy every N policy updates (0 disables)."""
 
 
 @configclass

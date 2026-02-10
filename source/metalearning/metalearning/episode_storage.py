@@ -39,6 +39,7 @@ class EpisodeStorage:
         dones = cast(torch.Tensor, rollouts["dones"])
         states = rollouts.get("states")
         physics = rollouts.get("physics")
+        raw_states = rollouts.get("raw_states")
 
         env_id_list = self._normalize_env_ids(env_ids, int(lengths.shape[0]))
         for rollout_idx, env_id in enumerate(env_id_list):
@@ -67,6 +68,8 @@ class EpisodeStorage:
             assert physics is not None, "physics must be provided for episode storage"
             episode["states"] = self._slice_env_data(states, rollout_idx)
             episode["physics"] = self._slice_env_data(physics, rollout_idx)
+            if raw_states is not None:
+                episode["raw_states"] = self._slice_env_data(raw_states, rollout_idx)
             self.episodes.append(episode)
             self.total_episodes += 1
             if len(self.episodes) >= self.max_num_episodes:
@@ -106,4 +109,6 @@ class EpisodeStorage:
         if isinstance(data, torch.Tensor):
             # Advanced indexing to slice per-episode extras.
             return data[rollout_idx].detach().cpu()
+        if isinstance(data, list):
+            return data[rollout_idx]
         return data
