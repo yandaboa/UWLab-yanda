@@ -192,6 +192,47 @@ def subset_episodes(
         print(f"[INFO] Wrote {out_path} (episodes: {len(subset)}/{len(episodes)})")
 
 
+def split_episodes_train_val(
+    path: Path,
+    output_dir: Path | None,
+    val_fraction: float = 0.05,
+) -> tuple[Path, Path]:
+    if not 0.0 < val_fraction < 1.0:
+        raise ValueError("val_fraction must be in (0, 1).")
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    data = torch.load(path, map_location="cpu")
+    episodes = _normalize_episodes(data)
+    if len(episodes) < 2:
+        raise ValueError("Need at least two episodes to create a train/val split.")
+    generator = torch.Generator().manual_seed(0)
+    perm = torch.randperm(len(episodes), generator=generator)
+    num_val = max(1, int(len(episodes) * val_fraction))
+    val_indices = perm[:num_val].tolist()
+    train_indices = perm[num_val:].tolist()
+    train_episodes = [episodes[i] for i in train_indices]
+    val_episodes = [episodes[i] for i in val_indices]
+    train_path = _output_path(path, output_dir, "_train")
+    val_path = _output_path(path, output_dir, "_val")
+    if isinstance(data, dict) and "episodes" in data:
+        train_data = dict(data)
+        train_data["episodes"] = train_episodes
+        val_data = dict(data)
+        val_data["episodes"] = val_episodes
+    else:
+        train_data = {"episodes": train_episodes}
+        val_data = {"episodes": val_episodes}
+    torch.save(train_data, train_path)
+    torch.save(val_data, val_path)
+    print(
+        f"[INFO] Wrote {train_path} (episodes: {len(train_episodes)}/{len(episodes)})"
+    )
+    print(
+        f"[INFO] Wrote {val_path} (episodes: {len(val_episodes)}/{len(episodes)})"
+    )
+    return train_path, val_path
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Dataset utilities for demo episode files.")
     parser.add_argument(

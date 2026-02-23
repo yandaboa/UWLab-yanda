@@ -151,6 +151,9 @@ class RslRlFancyTransformerHistoryActorCriticCfg(RslRlFancyActorCriticCfg):
     action_distribution: Literal["normal", "categorical"] = "normal"
     """Action distribution type for the policy."""
 
+    model_finetune_ckpt: str | None = None
+    """Optional supervised-context checkpoint to initialize the actor."""
+
     optimizer: TransformerOptimizerCfg = TransformerOptimizerCfg()
     """The optimizer for the transformer history actor-critic."""
 

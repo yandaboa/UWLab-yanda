@@ -52,5 +52,8 @@ class BCFromContextWarmStartCfg:
 class RslRlPpoAlgorithmWarmStartCfg(RslRlPpoAlgorithmCfg):
     """PPO configuration with optional BC warm start."""
 
+    num_minibatches_per_update: int = 1
+    """Number of mini-batches to accumulate before stepping the optimizer."""
+
     bc_warmstart_cfg: BCFromContextWarmStartCfg | None = None
     """Optional context-conditioned BC warm-start configuration."""

@@ -50,14 +50,7 @@ class ContextSequencePolicy(nn.Module):
             if self.include_rewards:
                 token_input_dim += reward_dim
             self.context_token_proj = self._make_projection(token_input_dim, token_dim)
-            if self.share_obs_projection:
-                if token_input_dim != obs_dim:
-                    raise ValueError(
-                        "share_current_and_context_obs_projection=True requires current_obs and "
-                        "context token features to match. For merged layout this usually means "
-                        "disabling include_actions_in_context/include_rewards_in_context."
-                    )
-            else:
+            if not self.share_obs_projection:
                 self.current_obs_proj = self._make_projection(obs_dim, token_dim)
         self.action_bins = action_bins
         self.action_bin_values = action_bin_values
@@ -76,7 +69,7 @@ class ContextSequencePolicy(nn.Module):
                 hidden_dim=cfg.model.hidden_dim,
                 num_layers=cfg.model.num_layers,
                 num_heads=cfg.model.num_heads,
-                max_len=256 + cfg.model.num_actions,
+                max_len=101 + cfg.model.num_actions,
                 attention_dropout=cfg.model.attention_dropout,
                 residual_dropout=cfg.model.residual_dropout,
                 embedding_dropout=cfg.model.embedding_dropout,
@@ -93,7 +86,7 @@ class ContextSequencePolicy(nn.Module):
                 hidden_dim=cfg.model.hidden_dim,
                 num_layers=cfg.model.num_layers,
                 num_heads=cfg.model.num_heads,
-                max_len=256,
+                max_len=101,
                 attention_dropout=cfg.model.attention_dropout,
                 residual_dropout=cfg.model.residual_dropout,
                 embedding_dropout=cfg.model.embedding_dropout,

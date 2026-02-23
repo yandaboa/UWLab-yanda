@@ -289,7 +289,7 @@ def _plot_traj3d_multi_plotly(
                     z=[data[-1, 2]],
                     mode="markers",
                     name=f"{label}_end",
-                    marker={"size": 4, "symbol": "triangle-up"},
+                    marker={"size": 4, "symbol": "diamond"},
                     showlegend=False,
                 )
             )
@@ -368,6 +368,106 @@ def _plot_suffix(backend: str) -> str:
     return ".html" if backend == "plotly" else ".png"
 
 
+def _episode_success_flag(episode: Mapping[str, Any]) -> bool:
+    success = episode.get("success")
+    if isinstance(success, torch.Tensor):
+        if success.numel() == 0:
+            return False
+        return bool(success.reshape(-1)[0].item())
+    if isinstance(success, (bool, int, float)):
+        return bool(success)
+    return False
+
+
+def _coerce_rewards(rewards: torch.Tensor) -> torch.Tensor:
+    if rewards.ndim == 1:
+        return rewards
+    if rewards.ndim == 2:
+        if rewards.shape[1] == 1:
+            return rewards[:, 0]
+        return rewards.sum(dim=1)
+    raise ValueError(f"Expected 1D or 2D rewards, got shape {rewards.shape}.")
+
+
+def _plot_rewards_matplotlib(
+    reward_series: Sequence[torch.Tensor],
+    labels: Sequence[str],
+    success_flags: Sequence[bool],
+    title: str,
+    out_path: Optional[Path],
+) -> None:
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for rewards, label, success in zip(reward_series, labels, success_flags):
+        color = "tab:blue" if success else "tab:red"
+        rewards_np = rewards.detach().cpu().numpy()
+        ax.plot(np.arange(rewards_np.shape[0]), rewards_np, color=color, linewidth=1.6, label=label)
+    ax.set_xlabel("step")
+    ax.set_ylabel("reward")
+    ax.set_title(title)
+    ax.legend()
+    fig.tight_layout()
+    if out_path is not None:
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def _plot_rewards_plotly(
+    reward_series: Sequence[torch.Tensor],
+    labels: Sequence[str],
+    success_flags: Sequence[bool],
+    title: str,
+    out_path: Optional[Path],
+) -> None:
+    go = _get_plotly()
+    fig = go.Figure()
+    for rewards, label, success in zip(reward_series, labels, success_flags):
+        rewards_np = rewards.detach().cpu().numpy()
+        color = "blue" if success else "red"
+        fig.add_trace(
+            go.Scatter(
+                x=np.arange(rewards_np.shape[0]),
+                y=rewards_np,
+                mode="lines",
+                name=label,
+                line={"width": 2, "color": color},
+            )
+        )
+    fig.update_layout(
+        title=title,
+        xaxis_title="step",
+        yaxis_title="reward",
+        template="plotly_white",
+    )
+    if out_path is not None:
+        fig.write_html(str(out_path), include_plotlyjs=True, full_html=True)
+    else:
+        fig.show()
+
+
+def plot_episode_rewards(
+    episodes: Sequence[Mapping[str, Any]],
+    labels: Sequence[str],
+    out_path: Optional[Path],
+    backend: str = "plotly",
+) -> None:
+    reward_series = []
+    success_flags = []
+    for episode in episodes:
+        rewards = episode.get("rewards")
+        if not isinstance(rewards, torch.Tensor):
+            raise TypeError("Episode rewards are missing or not a tensor.")
+        length = int(episode["length"]) if "length" in episode else None
+        rewards = trim_to_length(rewards, length)
+        reward_series.append(_coerce_rewards(rewards))
+        success_flags.append(_episode_success_flag(episode))
+    if backend == "plotly":
+        _plot_rewards_plotly(reward_series, labels, success_flags, "Episode Rewards", out_path)
+    else:
+        _plot_rewards_matplotlib(reward_series, labels, success_flags, "Episode Rewards", out_path)
+
+
 def visualize_context_rollout_3d(
     context_episode: Mapping[str, Any],
     rollout_episode: Mapping[str, Any],
@@ -416,10 +516,11 @@ def main() -> None:
         "--backend",
         type=str,
         choices=("plotly", "matplotlib"),
-        default="plotly",
+        default="matplotlib",
         help="Plotting backend to use (default: plotly).",
     )
     parser.add_argument("--plot-actions", action="store_true", help="Plot actions.")
+    parser.add_argument("--plot-rewards", action="store_true", help="Plot per-step rewards.")
     args = parser.parse_args()
 
     out_dir = args.out_dir or (args.path.parent / "visualizations")
@@ -455,11 +556,22 @@ def main() -> None:
                 else:
                     plot_series(actions, f"Rollout Actions ({rollout_key})", "action", action_out)
                 print(f"[INFO] Saved plot: {action_out}")
+            if args.plot_rewards:
+                reward_out = out_dir / f"pair_{episode_idxs[0]:04d}_rewards{_plot_suffix(args.backend)}"
+                plot_episode_rewards(
+                    [rollout_episode],
+                    [f"rollout_{episode_idxs[0]:04d}"],
+                    reward_out,
+                    backend=args.backend,
+                )
+                print(f"[INFO] Saved plot: {reward_out}")
         else:
             context_trajs = []
             rollout_trajs = []
             combined_trajs = []
             combined_labels = []
+            rollout_episodes = []
+            rollout_labels = []
             context_key = "end_effector_pose"
             rollout_key = "debug/end_effector_pose"
             for idx in episode_idxs:
@@ -480,6 +592,8 @@ def main() -> None:
                 rollout_trajs.append(rollout_traj)
                 combined_trajs.extend([context_traj, rollout_traj])
                 combined_labels.extend([f"context_{idx:04d}", f"rollout_{idx:04d}"])
+                rollout_episodes.append(rollout_episode)
+                rollout_labels.append(f"rollout_{idx:04d}")
             combined_out = out_dir / f"pairs_context_rollout_multi_eef{_plot_suffix(args.backend)}"
             if args.backend == "plotly":
                 _plot_traj3d_multi_plotly(
@@ -490,13 +604,18 @@ def main() -> None:
                     combined_trajs, combined_labels, "Context + Rollout (multiple episodes)", combined_out
                 )
             print(f"[INFO] Saved plot: {combined_out}")
+            if args.plot_rewards and rollout_episodes:
+                reward_out = out_dir / f"pairs_rollout_rewards{_plot_suffix(args.backend)}"
+                plot_episode_rewards(rollout_episodes, rollout_labels, reward_out, backend=args.backend)
+                print(f"[INFO] Saved plot: {reward_out}")
     else:
         episodes = load_episodes(args.path)
         if len(episode_idxs) == 1:
             episode = select_episode(episodes, episode_idxs[0])
             length = int(episode["length"]) if "length" in episode else None
             obs = episode["obs"]
-            debug_obs, debug_key = get_pose_obs(obs, args.obs_key)
+            obs_key = args.obs_key or "end_effector_pose"
+            debug_obs, debug_key = get_pose_obs(obs, obs_key)
             debug_obs = trim_to_length(debug_obs, length)
             if debug_obs.shape[-1] < 3:
                 raise ValueError(f"debug_obs has last dim {debug_obs.shape[-1]}, expected at least 3.")
@@ -517,26 +636,44 @@ def main() -> None:
                     else:
                         plot_series(actions, "Actions", "action", action_out)
                     print(f"[INFO] Saved plot: {action_out}")
+            if args.plot_rewards:
+                reward_out = out_dir / f"episode_{episode_idxs[0]:04d}_rewards{_plot_suffix(args.backend)}"
+                plot_episode_rewards(
+                    [episode],
+                    [f"episode_{episode_idxs[0]:04d}"],
+                    reward_out,
+                    backend=args.backend,
+                )
+                print(f"[INFO] Saved plot: {reward_out}")
         else:
             eef_trajs = []
             labels = []
             debug_key = ""
+            reward_episodes = []
+            reward_labels = []
             for idx in episode_idxs:
                 episode = select_episode(episodes, idx)
                 length = int(episode["length"]) if "length" in episode else None
                 obs = episode["obs"]
-                debug_obs, debug_key = get_pose_obs(obs, args.obs_key)
+                obs_key = args.obs_key or "end_effector_pose"
+                debug_obs, debug_key = get_pose_obs(obs, obs_key)
                 debug_obs = trim_to_length(debug_obs, length)
                 if debug_obs.shape[-1] < 3:
                     raise ValueError(f"debug_obs has last dim {debug_obs.shape[-1]}, expected at least 3.")
                 eef_trajs.append(debug_obs[..., :3])
                 labels.append(f"episode_{idx:04d}")
+                reward_episodes.append(episode)
+                reward_labels.append(f"episode_{idx:04d}")
             eef_out = out_dir / f"episodes_multi_eef{_plot_suffix(args.backend)}"
             if args.backend == "plotly":
                 _plot_traj3d_multi_plotly(eef_trajs, labels, f"End Effector ({debug_key}[:3])", eef_out)
             else:
                 _plot_traj3d_multi(eef_trajs, labels, f"End Effector ({debug_key}[:3])", eef_out)
             print(f"[INFO] Saved plot: {eef_out}")
+            if args.plot_rewards and reward_episodes:
+                reward_out = out_dir / f"episodes_multi_rewards{_plot_suffix(args.backend)}"
+                plot_episode_rewards(reward_episodes, reward_labels, reward_out, backend=args.backend)
+                print(f"[INFO] Saved plot: {reward_out}")
 
 
 if __name__ == "__main__":

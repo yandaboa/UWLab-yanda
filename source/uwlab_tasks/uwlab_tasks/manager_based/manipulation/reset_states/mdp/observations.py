@@ -30,7 +30,7 @@ def target_asset_pose_in_root_asset_frame(
     target_body_idx = 0 if isinstance(target_asset_cfg.body_ids, slice) else target_asset_cfg.body_ids
     root_body_idx = 0 if isinstance(root_asset_cfg.body_ids, slice) else root_asset_cfg.body_ids
 
-    target_pos = target_asset.data.body_link_pos_w[:, target_body_idx].view(-1, 3)
+    target_pos = target_asset.data.body_link_pos_w[:, target_body_idx].view(-1, 3).clone()
     target_pos[:, 0] += ood_offset
     target_quat = target_asset.data.body_link_quat_w[:, target_body_idx].view(-1, 4)
     root_pos = root_asset.data.body_link_pos_w[:, root_body_idx].view(-1, 3)

@@ -41,6 +41,7 @@ class DemoTrackingContext:
         if not isinstance(episode_paths, Iterable) or not episode_paths:
             raise ValueError("DemoTrackingContext requires non-empty episode_paths.")
         self.episodes: list[dict[str, Any]] = []
+        self.episode_success: list[bool] = []
         action_discretization_spec: dict[str, Any] | None = None
         for path in episode_paths:
             local_path = retrieve_file_path(str(path), download_dir=download_dir)
@@ -57,6 +58,7 @@ class DemoTrackingContext:
                 if "states" not in cleaned or "physics" not in cleaned:
                     raise ValueError(f"Episode in {local_path} is missing states or physics.")
                 self.episodes.append(cleaned)
+                self.episode_success.append(_extract_episode_success(cleaned))
         if not self.episodes:
             raise ValueError("DemoTrackingContext found no episodes to load.")
         self.action_discretization_spec = action_discretization_spec
@@ -86,6 +88,7 @@ class DemoTrackingContext:
         self.demo_rewards = torch.zeros(
             (resolved_num_envs, self.demo_obs_max_len, *self.demo_reward_shape), device=device
         )
+        self.demo_success = torch.zeros((resolved_num_envs,), dtype=torch.bool, device=device)
         raw_noise_scale = params.get("state_noise_scale", 0.0)
         self.state_noise_scale = float(raw_noise_scale) if isinstance(raw_noise_scale, (int, float)) else 0.0
         self._physics_zero_cache: dict[tuple[Any, ...], torch.Tensor] = {}
@@ -102,6 +105,11 @@ class DemoTrackingContext:
         )
         self.episode_indices[env_ids] = episode_indices
         selected = [self.episodes[idx] for idx in episode_indices.tolist()]
+        selected_success = torch.tensor(
+            [self.episode_success[idx] for idx in episode_indices.tolist()],
+            device=self._env.device,
+            dtype=torch.bool,
+        )
         padded_obs, padded_obs_dict, lengths = _pad_demo_obs_batch(
             [episode["obs"] for episode in selected],
             self.demo_obs_max_len,
@@ -134,6 +142,7 @@ class DemoTrackingContext:
         self._assign_demo_obs(env_ids_index, padded_obs, padded_obs_dict, lengths)
         self.demo_actions[env_ids_index] = padded_actions
         self.demo_rewards[env_ids_index] = padded_rewards
+        self.demo_success[env_ids_index] = selected_success
         multi_reset_manager = getattr(self._env, "multi_reset_manager", None)
         if self.use_raw_states:
             if multi_reset_manager is None:
@@ -162,7 +171,8 @@ class DemoTrackingContext:
             multi_reset_manager.load_saved_states(env_ids, state_indices, task_ids=task_ids)
         else:
             self._env.scene.reset_to(self.states, env_ids=env_ids, is_relative=True)  # type: ignore[arg-type]
-        utils.apply_physics_for_envs(self._env, env_ids, physics)
+
+        # utils.apply_physics_for_envs(self._env, env_ids, physics)
 
     def _assign_demo_obs(
         self,
@@ -232,6 +242,16 @@ def _strip_debug_obs(episode: dict[str, Any]) -> dict[str, Any]:
         }
         cleaned["obs"] = obs
     return cleaned
+
+
+def _extract_episode_success(episode: dict[str, Any]) -> bool:
+    success = episode.get("success", False)
+    if isinstance(success, torch.Tensor):
+        assert success.numel() == 1, "Expected scalar success flag per episode."
+        return bool(success.item())
+    if isinstance(success, (bool, int)):
+        return bool(success)
+    return False
 
 
 def _is_multi_reset_state(states: Any) -> bool:

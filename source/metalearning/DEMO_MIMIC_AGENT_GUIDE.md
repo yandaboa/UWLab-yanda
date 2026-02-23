@@ -195,7 +195,7 @@ python scripts/reinforcement_learning/rsl_rl/train.py \
 
 ```bash
 python scripts/reinforcement_learning/rsl_rl/train_supervised_context.py \
-  --episode_paths "episodes/20260208_011257/episodes_*.pt"
+  data.episode_paths='["episodes/20260208_011257/episodes_*.pt"]'
 ```
 
 ### Evaluate demo tracking

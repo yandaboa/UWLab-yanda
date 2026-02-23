@@ -39,3 +39,30 @@ def demo_link_quats(
     if flatten:
         return q_link_w.reshape(q_link_w.shape[0], -1)
     return q_link_w
+
+
+def end_effector_quat(
+    env: ManagerBasedEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names="robotiq_base_link"),
+    root_relative: bool = True,
+) -> torch.Tensor:
+    """Returns end-effector rotation as a quaternion (wxyz)."""
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    body_ids = asset_cfg.body_ids
+    if isinstance(body_ids, slice):
+        body_idx = 0
+    elif isinstance(body_ids, (list, tuple)):
+        assert len(body_ids) == 1, "end_effector_quat expects a single body id"
+        body_idx = body_ids[0]
+    else:
+        body_idx = body_ids
+
+    q_link_w = asset.data.body_link_quat_w[:, body_idx].view(-1, 4)
+
+    if root_relative:
+        q_root = asset.data.root_link_quat_w
+        q_root_inv = math_utils.quat_conjugate(q_root)
+        q_link_w = math_utils.quat_mul(q_root_inv, q_link_w)
+
+    return math_utils.normalize(q_link_w)

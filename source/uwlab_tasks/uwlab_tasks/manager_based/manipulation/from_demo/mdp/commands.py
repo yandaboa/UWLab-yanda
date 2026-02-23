@@ -15,6 +15,11 @@ from isaaclab.assets import Articulation
 from isaaclab.managers import CommandTerm
 import isaaclab.utils.math as math_utils
 
+from uwlab_tasks.manager_based.manipulation.reset_states import mdp as reset_states_mdp
+from .context import (
+    tracking_end_effector_orientation_error,
+    tracking_end_effector_position_error,
+)
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
@@ -28,7 +33,9 @@ class DemoTrackingMetricsCommand(CommandTerm):
         super().__init__(cfg, env)
         self.robot: Articulation = env.scene[cfg.asset_cfg.name]
         self.metrics["joint_tracking_error"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["ee_tracking_error"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["ee_position_tracking_error"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["ee_orientation_tracking_error"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["demo_success_match_rate"] = torch.zeros(self.num_envs, device=self.device)
         self._command = torch.zeros((self.num_envs, 1), device=self.device)
 
     @property
@@ -66,12 +73,18 @@ class DemoTrackingMetricsCommand(CommandTerm):
         ang = _quat_angle_from_rel(q_rel)
         self.metrics["joint_tracking_error"][:] = torch.sum(ang * ang, dim=-1)
 
-        demo_ee = demo_obs_dict["end_effector_pose"]
-        demo_ee_pos = demo_ee[env_ids, t, :3]
-        unwrapped = cast(Any, env.unwrapped)
-        curr_ee_pose = unwrapped.observation_manager._obs_buffer["ee_pose"]
-        curr_ee_pos = curr_ee_pose[:, :3]
-        self.metrics["ee_tracking_error"][:] = torch.sum((demo_ee_pos - curr_ee_pos) ** 2, dim=-1)
+        self.metrics["ee_position_tracking_error"][:] = tracking_end_effector_position_error(env)
+        self.metrics["ee_orientation_tracking_error"][:] = tracking_end_effector_orientation_error(env)
+
+        demo_success = getattr(context_term, "demo_success", None)
+        assert demo_success is not None, "Demo context is missing demo_success."
+        sim_success = reset_states_mdp.calculate_successes(env).to(torch.bool)
+        if torch.any(demo_success):
+            matched = torch.logical_and(demo_success, sim_success)
+            rate = matched.sum(dtype=torch.float32) / demo_success.sum(dtype=torch.float32)
+        else:
+            rate = torch.zeros((), device=self.device)
+        self.metrics["demo_success_match_rate"][:] = rate
 
     def _resample_command(self, env_ids):
         pass

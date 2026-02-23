@@ -43,6 +43,27 @@ class ContextTokenBuilder:
             lengths = torch.clamp(lengths, max=max_context_length)
         return lengths, max_context_length
 
+    def _pad_current_obs_for_shared_projection(
+        self,
+        current_obs: torch.Tensor,
+        target_dim: int,
+    ) -> torch.Tensor:
+        current_dim = current_obs.shape[-1]
+        if current_dim == target_dim:
+            return current_obs
+        if current_dim > target_dim:
+            raise ValueError(
+                "current_obs dim exceeds context token input dim when share_obs_projection is enabled "
+                f"(current_obs={current_dim}, context_token={target_dim})."
+            )
+        pad_dim = target_dim - current_dim
+        padding = torch.zeros(
+            (*current_obs.shape[:-1], pad_dim),
+            device=current_obs.device,
+            dtype=current_obs.dtype,
+        )
+        return torch.cat([current_obs, padding], dim=-1)
+
     def build_tokens_from_context(
         self,
         demo_obs: torch.Tensor,
@@ -59,11 +80,20 @@ class ContextTokenBuilder:
     ) -> TokenBuildOutput:
         if current_obs_dim is None or current_obs.shape[-1] != current_obs_dim:
             raise ValueError("Current observation dim must match policy obs dim.")
-        if self.share_obs_projection and current_obs.shape[-1] != demo_obs.shape[-1]:
-            raise ValueError(
-                "share_obs_projection=True requires matching current_obs/context_obs dims, "
-                f"got current_obs={current_obs.shape[-1]} and context_obs={demo_obs.shape[-1]}."
-            )
+        if self.share_obs_projection:
+            if self.layout in {"state_action", "state_only"}:
+                if current_obs.shape[-1] != demo_obs.shape[-1]:
+                    raise ValueError(
+                        "share_obs_projection=True requires matching current_obs/context_obs dims, "
+                        f"got current_obs={current_obs.shape[-1]} and context_obs={demo_obs.shape[-1]}."
+                    )
+            else:
+                token_input_dim = demo_obs.shape[-1]
+                if self.include_actions:
+                    token_input_dim += demo_actions.shape[-1]
+                if self.include_rewards:
+                    token_input_dim += demo_rewards.shape[-1]
+                current_obs = self._pad_current_obs_for_shared_projection(current_obs, token_input_dim)
         lengths, max_context_length = self.resolve_context_lengths(demo_lengths)
         if self.layout == "state_action":
             return self._build_state_action_tokens(

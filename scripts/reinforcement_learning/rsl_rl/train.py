@@ -85,6 +85,7 @@ from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.runners import OnPolicyRunner
 from uwlab_rl.rsl_rl.transformer_ppo import PPOWithLongContext
 from uwlab_rl.rsl_rl.tracking_runner import TrackingOnPolicyRunner
+from uwlab_rl.rsl_rl.split_device_tracking_runner import SplitDeviceTrackingOnPolicyRunner
 from uwlab_rl.rsl_rl.long_context_ac import LongContextActorCritic
 from uwlab_rl.rsl_rl.distillation_runner import DistillationRunner
 
@@ -123,11 +124,56 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
 
+def _normalize_device_str(device: str | None) -> str | None:
+    if device is None:
+        return None
+    if device == "cuda":
+        return "cuda:0"
+    return device
+
+
+def _override_policy_from_supervised_checkpoint(agent_cfg: RslRlBaseRunnerCfg) -> None:
+    policy_cfg = getattr(agent_cfg, "policy", None)
+    if policy_cfg is None:
+        return
+    ckpt_path = getattr(policy_cfg, "model_finetune_ckpt", None)
+    if not ckpt_path:
+        return
+    if not os.path.isfile(ckpt_path):
+        raise FileNotFoundError(f"Supervised finetune checkpoint not found: {ckpt_path}")
+    checkpoint = torch.load(ckpt_path, map_location="cpu")
+    assert isinstance(checkpoint, dict), "Supervised finetune checkpoint must be a dictionary."
+    assert "cfg" in checkpoint, "Supervised finetune checkpoint must contain a cfg."
+    cfg_dict = checkpoint["cfg"]
+    assert isinstance(cfg_dict, dict), "Supervised finetune cfg must be a dictionary."
+    model_cfg = cfg_dict.get("model", {})
+    assert isinstance(model_cfg, dict), "Supervised finetune model cfg must be a dictionary."
+    override_keys = (
+        "context_token_layout",
+        "include_actions_in_context",
+        "include_rewards_in_context",
+        "share_current_and_context_obs_projection",
+        "encoding_projection_hidden_dim",
+        "embedding_dim",
+        "hidden_dim",
+        "num_layers",
+        "num_heads",
+        "embedding_dropout",
+        "attention_dropout",
+        "residual_dropout",
+        "action_distribution",
+    )
+    for key in override_keys:
+        if key in model_cfg and hasattr(policy_cfg, key):
+            setattr(policy_cfg, key, model_cfg[key])
+
+
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+    _override_policy_from_supervised_checkpoint(agent_cfg)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
@@ -223,10 +269,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         agent_cfg_dict["algorithm"].pop("bc_warmstart_cfg")
     if agent_cfg_dict["algorithm"]["class_name"] == "PPOWithLongContext":
         agent_cfg_dict["algorithm"]["num_learning_iterations"] = agent_cfg.max_iterations
+
+    env_device = _normalize_device_str(getattr(env_cfg.sim, "device", None))
+    train_device = _normalize_device_str(getattr(agent_cfg, "device", None))
+    use_split_device_runner = (
+        agent_cfg.class_name == "OnPolicyRunner"
+        and agent_cfg_dict["algorithm"]["class_name"] == "PPOWithLongContext"
+        and env_device is not None
+        and train_device is not None
+        and env_device != train_device
+    )
+    if use_split_device_runner and args_cli.distributed:
+        raise ValueError("Split-device long-context PPO is not supported with --distributed.")
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
         trajectory_cfg = agent_cfg_dict.get("trajectory_viz", {})
-        if isinstance(trajectory_cfg, dict) and trajectory_cfg.get("enable", False):
+        if use_split_device_runner:
+            runner = SplitDeviceTrackingOnPolicyRunner(env, agent_cfg_dict, log_dir=log_dir, device=agent_cfg.device)
+        elif isinstance(trajectory_cfg, dict) and trajectory_cfg.get("enable", False):
             runner = TrackingOnPolicyRunner(env, agent_cfg_dict, log_dir=log_dir, device=agent_cfg.device)
         else:
             runner = OnPolicyRunner(env, agent_cfg_dict, log_dir=log_dir, device=agent_cfg.device)

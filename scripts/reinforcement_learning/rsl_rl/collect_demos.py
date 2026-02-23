@@ -87,6 +87,7 @@ from isaaclab.envs import (
 )
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
+from isaaclab.utils.io import dump_yaml
 
 from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx
 from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
@@ -160,6 +161,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # for logging, video, etc.
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     episodes_dir = os.path.join(log_dir, "episodes", timestamp)
+    os.makedirs(episodes_dir, exist_ok=True)
+    dump_yaml(os.path.join(episodes_dir, "env.yaml"), env_cfg)
 
     action_discretization_cfg = getattr(env_cfg, "action_discretization", None)
     if action_discretization_cfg is not None:
@@ -326,6 +329,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 states, physics = state_storage.fetch(done_env_ids)
                 rollouts["states"] = states
                 rollouts["physics"] = physics
+                first_success = getattr(manager_env, "first_success", None)
+                if first_success is None:
+                    success_flags = torch.zeros(
+                        (done_env_ids.numel(),), dtype=torch.bool, device=manager_env.device
+                    )
+                else:
+                    assert isinstance(first_success, torch.Tensor), "Expected env.first_success to be a Tensor."
+                    success_flags = first_success[done_env_ids] != -1
+                rollouts["success"] = success_flags
                 if args_cli.save_raw_states:
                     rollouts["raw_states"] = state_storage.fetch_raw_states(done_env_ids)  # type: ignore[assignment]
                 episode_storage.add_episode(rollouts, env_ids=done_env_ids)

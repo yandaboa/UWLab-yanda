@@ -3,6 +3,11 @@ python scripts/reinforcement_learning/rsl_rl/collect_demos.py     --task OmniFro
 
 to debug, just add ./debug.sh in front and take out python
 
+post process the data to cut off episodes that drag on too long:
+python -m metalearning.tools.post_process_data /path/to/episodes_000000.pt
+or
+python -m metalearning.tools.post_process_data /path/to/episodes --out-dir /path/to/episodes_post
+
 training:
 scripts/reinforcement_learning/rsl_rl/train.py \
     --task OmniFromDemo-UR5eRobotiq2f85-Train-v0 \

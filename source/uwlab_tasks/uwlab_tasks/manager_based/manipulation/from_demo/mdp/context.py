@@ -24,7 +24,12 @@ __all__ = [
     "get_last_demo_rewards",
     "pose_quat_tracking_reward",
     "tracking_end_effector_reward",
+    "tracking_end_effector_orientation_reward",
+    "tracking_end_effector_position_error",
+    "tracking_end_effector_orientation_error",
     "tracking_action_reward",
+    "demo_success_reward",
+    "demo_dense_success_reward",
 ]
 
 
@@ -101,30 +106,53 @@ def tracking_end_effector_reward(
     k: float = 40.0,  # the -40 in the paper
     tolerance: float = 0.1,
 ) -> torch.Tensor:
-    context_term = _get_tracking_context(env)
+    sq_dist = (tracking_end_effector_position_error(env) / tolerance) ** 2
+    return torch.exp(-k * sq_dist)
 
-    # pick demo timestep t per env (clamped to demo length)
-    demo_lengths = context_term.demo_obs_lengths  # [N]
-    end_idx = (demo_lengths - 1).clamp(min=0)
-    t = torch.minimum(env.episode_length_buf.long(), end_idx)  # [N]
 
-    # reference EE position
-    demo_obs_dict = context_term.demo_obs_dict
-    # Expect shape [N, T, 3] or [N, T, 6]; we only use xyz
-    demo_ee = demo_obs_dict["end_effector_pose"]  # [N, T, D]
-    env_ids = torch.arange(env.num_envs, device=demo_ee.device)
-    demo_ee_pos = demo_ee[env_ids, t, :3]  # [N, 3]
+def tracking_end_effector_orientation_reward(
+    env: "ManagerBasedRLEnv",
+    k: float = 2.0,
+    tolerance: float = 1.0,
+) -> torch.Tensor:
+    """Orientation tracking reward.
 
-    # current EE pose from your cached obs buffer; take xyz only
-    curr_ee_pose = env.unwrapped.observation_manager._obs_buffer["ee_pose"]  # [N, 6]
-    curr_ee_pos = curr_ee_pose[:, :3]  # [N, 3]
+    Uses the geodesic angle between unit quaternions:
+        theta = 2 * acos(|q_ref · q_cur|)
 
+    Reward shaping:
+        exp(-k * (theta / tolerance)^2)
+
+    Notes:
+    - Assumes pose[3:6] is a rotation vector (axis * angle), not Euler angles.
+    - Clamps dot product away from 1.0 to avoid unstable acos gradients.
+    """
+    sq_dist = (tracking_end_effector_orientation_error(env) / tolerance) ** 2
+    return torch.exp(-k * sq_dist)
+
+
+def tracking_end_effector_position_error(
+    env: "ManagerBasedRLEnv",
+) -> torch.Tensor:
+    demo_ee_pose, curr_ee_pose = _get_tracking_ee_pose(env)
+    demo_ee_pos = demo_ee_pose[:, :3]
+    curr_ee_pos = curr_ee_pose[:, :3]
     # ||p_hat - p||^2  (squared L2 norm), NOT mean-square
-    # sq_dist = torch.sum(((demo_ee_pos - curr_ee_pos)/ tolerance) ** 2, dim=-1)  # [N]
+    return torch.sum((demo_ee_pos - curr_ee_pos), dim=-1)
 
-    # exp(-40 * sum_e ||...||^2); with one EE, sum_e is just sq_dist
-    return -1 *_huber_saturating(demo_ee_pos - curr_ee_pos, delta=1.0).sum(dim=-1)
-    # return torch.exp(-k * sq_dist)
+
+def tracking_end_effector_orientation_error(
+    env: "ManagerBasedRLEnv",
+) -> torch.Tensor:
+    demo_ee_pose, curr_ee_pose = _get_tracking_ee_pose(env)
+    demo_rotvec = demo_ee_pose[:, 3:6]
+    curr_rotvec = curr_ee_pose[:, 3:6]
+    q_ref = _rotvec_to_quat(demo_rotvec)
+    q_cur = _rotvec_to_quat(curr_rotvec)
+    quat_dot = torch.sum(q_ref * q_cur, dim=-1).abs()
+    quat_dot = quat_dot.clamp(min=0.0, max=1.0 - 1e-6)
+    angle = 2.0 * torch.acos(quat_dot)
+    return angle
 
 def tracking_action_reward(env: "ManagerBasedRLEnv"):
     context_term = _get_tracking_context(env)
@@ -145,6 +173,48 @@ def tracking_action_reward(env: "ManagerBasedRLEnv"):
     demo_action = demo_actions[env_ids, t, :]
     action_diff = torch.square(demo_action - last_action).mean(dim=-1)
     return 5 - action_diff
+
+
+def _get_tracking_ee_pose(env: "ManagerBasedRLEnv") -> tuple[torch.Tensor, torch.Tensor]:
+    context_term = _get_tracking_context(env)
+    demo_lengths = context_term.demo_obs_lengths  # [N]
+    end_idx = (demo_lengths - 1).clamp(min=0)
+    t = torch.minimum(env.episode_length_buf.long(), end_idx)  # [N]
+    demo_obs_dict = context_term.demo_obs_dict
+    demo_ee = demo_obs_dict["end_effector_pose"]  # [N, T, D]
+    env_ids = torch.arange(env.num_envs, device=demo_ee.device)
+    demo_ee_pose = demo_ee[env_ids, t, :]
+    obs_manager = cast(Any, env.unwrapped).observation_manager
+    curr_ee_pose = obs_manager._obs_buffer["ee_pose"]
+    return demo_ee_pose, curr_ee_pose
+
+
+def _rotvec_to_quat(rotvec: torch.Tensor) -> torch.Tensor:
+    angle = torch.linalg.norm(rotvec, dim=-1, keepdim=True)
+    eps = 1e-8 if rotvec.dtype in (torch.float32, torch.float64) else 1e-4
+    axis = rotvec / torch.clamp(angle, min=eps)
+    default_axis = rotvec.new_tensor([1.0, 0.0, 0.0]).expand_as(axis)
+    axis = torch.where(angle > eps, axis, default_axis)
+    q = math_utils.quat_from_angle_axis(angle.squeeze(-1), axis)
+    return math_utils.normalize(q)
+
+
+def demo_success_reward(env: "ManagerBasedRLEnv") -> torch.Tensor:
+    """Success reward masked by whether the demo succeeded."""
+    context_term = _get_tracking_context(env)
+    demo_success = getattr(context_term, "demo_success", None)
+    assert demo_success is not None, "Demo context is missing demo_success."
+    reward = reset_states_mdp.success_reward(env)
+    return torch.where(demo_success, reward, torch.zeros_like(reward))
+
+
+def demo_dense_success_reward(env: "ManagerBasedRLEnv", std: float = 1.0) -> torch.Tensor:
+    """Dense success reward masked by whether the demo succeeded."""
+    context_term = _get_tracking_context(env)
+    demo_success = getattr(context_term, "demo_success", None)
+    assert demo_success is not None, "Demo context is missing demo_success."
+    reward = reset_states_mdp.dense_success_reward(env, std)
+    return torch.where(demo_success, reward, torch.zeros_like(reward))
 
 def _get_tracking_context(env: ManagerBasedEnv) -> Any:
     context = getattr(env, "context", None)

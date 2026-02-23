@@ -88,11 +88,15 @@ class PPOWithLongContext(PPO):
         policy,
         transformer_optimizer_cfg: Any | None = None,
         num_learning_iterations: int | None = None,
+        num_minibatches_per_update: int = 1,
         use_bf16_amp: bool = True,
         **kwargs: Any,
     ) -> None:
         super().__init__(policy, **kwargs)
         self.num_learning_iterations = num_learning_iterations
+        self.num_minibatches_per_update = int(num_minibatches_per_update)
+        if self.num_minibatches_per_update < 1:
+            raise ValueError("num_minibatches_per_update must be >= 1.")
         if getattr(policy, "action_distribution", "normal") == "categorical":
             self.transition = DiscreteActionRolloutStorage.Transition()
 
@@ -269,8 +273,13 @@ class PPOWithLongContext(PPO):
         else:
             mean_symmetry_loss = None
 
+        num_updates = self.num_learning_epochs * self.num_mini_batches
+        accumulation_steps = self.num_minibatches_per_update
+        accumulated_batches = 0
+        self.optimizer.zero_grad(set_to_none=True)
+
         generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-        for batch in generator:
+        for batch_idx, batch in enumerate(generator, start=1):
             if len(batch) == 11:
                 (
                     obs_batch,
@@ -437,25 +446,36 @@ class PPOWithLongContext(PPO):
                     if self.use_transformer_adaptive_lr and self.transformer_learning_rate is not None:
                         self.optimizer.set_lr(self.transformer_learning_rate, keys=["transformer"])
 
-            self.optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            (loss / accumulation_steps).backward()
             # if self.rnd:
             #     self.rnd_optimizer.zero_grad(set_to_none=True)  # type: ignore
             #     rnd_loss.backward()
+            accumulated_batches += 1
+            should_step_optimizer = accumulated_batches >= accumulation_steps or batch_idx == num_updates
+            if should_step_optimizer:
+                if accumulated_batches < accumulation_steps:
+                    grad_scale = accumulation_steps / accumulated_batches
+                    for parameter in self.policy.parameters():
+                        if parameter.grad is not None:
+                            parameter.grad.mul_(grad_scale)
 
-            if self.is_multi_gpu:
-                self.reduce_parameters()
+                if self.is_multi_gpu:
+                    self.reduce_parameters()
 
-            nn.utils.clip_grad_norm_(self.policy_params, self.max_grad_norm)
-            if self.encoder_params:
-                encoder_grad_norm = nn.utils.clip_grad_norm_(self.encoder_params, self.transformer_max_grad_norm)
-                self.last_encoder_grad_norm = float(encoder_grad_norm)
-            else:
-                self.last_encoder_grad_norm = 0.0
+                nn.utils.clip_grad_norm_(self.policy_params, self.max_grad_norm)
+                if self.encoder_params:
+                    encoder_grad_norm = nn.utils.clip_grad_norm_(
+                        self.encoder_params, self.transformer_max_grad_norm
+                    )
+                    self.last_encoder_grad_norm = float(encoder_grad_norm)
+                else:
+                    self.last_encoder_grad_norm = 0.0
 
-            self.optimizer.step()
-            # if self.rnd_optimizer:
-            #     self.rnd_optimizer.step()
+                self.optimizer.step()
+                self.optimizer.zero_grad(set_to_none=True)
+                accumulated_batches = 0
+                # if self.rnd_optimizer:
+                #     self.rnd_optimizer.step()
 
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
@@ -469,7 +489,6 @@ class PPOWithLongContext(PPO):
         if self.transformer_lr_scheduler is not None:
             self.transformer_lr_scheduler.step()
 
-        num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates

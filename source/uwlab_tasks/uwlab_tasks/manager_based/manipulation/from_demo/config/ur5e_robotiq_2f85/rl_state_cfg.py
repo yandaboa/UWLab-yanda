@@ -131,8 +131,10 @@ class BaseEventCfg:
         func=omni_reset_mdp.randomize_rigid_body_material,  # type: ignore
         mode="startup",
         params={
-            "static_friction_range": (0.3, 1.2),
-            "dynamic_friction_range": (0.2, 1.0),
+            # "static_friction_range": (0.3, 1.2),
+            "static_friction_range": (0.75, 0.75),
+            "dynamic_friction_range": (0.6, 0.6),
+            # "dynamic_friction_range": (0.2, 1.0),
             "restitution_range": (0.0, 0.0),
             "num_buckets": 256,
             "asset_cfg": SceneEntityCfg("robot"),
@@ -145,8 +147,10 @@ class BaseEventCfg:
         func=omni_reset_mdp.randomize_rigid_body_material,  # type: ignore
         mode="startup",
         params={
-            "static_friction_range": (1.0, 2.0),
-            "dynamic_friction_range": (0.9, 1.9),
+            # "static_friction_range": (1.0, 2.0),
+            "static_friction_range": (1.5, 1.5),
+            # "dynamic_friction_range": (0.9, 1.9),
+            "dynamic_friction_range": (1.4, 1.4),
             "restitution_range": (0.0, 0.0),
             "num_buckets": 256,
             "asset_cfg": SceneEntityCfg("insertive_object"),
@@ -159,8 +163,10 @@ class BaseEventCfg:
         func=omni_reset_mdp.randomize_rigid_body_material,  # type: ignore
         mode="startup",
         params={
-            "static_friction_range": (1.0, 2.0),
-            "dynamic_friction_range": (0.9, 1.9),
+            # "static_friction_range": (1.0, 2.0),
+            "static_friction_range": (1.5, 1.5),
+            # "dynamic_friction_range": (0.9, 1.9),
+            "dynamic_friction_range": (1.4, 1.4),
             "restitution_range": (0.0, 0.0),
             "num_buckets": 256,
             "asset_cfg": SceneEntityCfg("receptive_object"),
@@ -172,8 +178,10 @@ class BaseEventCfg:
         func=omni_reset_mdp.randomize_rigid_body_material,  # type: ignore
         mode="startup",
         params={
-            "static_friction_range": (0.3, 0.6),
-            "dynamic_friction_range": (0.2, 0.5),
+            # "static_friction_range": (0.3, 0.6),
+            "static_friction_range": (0.45, 0.45),
+            # "dynamic_friction_range": (0.2, 0.5),
+            "dynamic_friction_range": (0.35, 0.35),
             "restitution_range": (0.0, 0.0),
             "num_buckets": 256,
             "asset_cfg": SceneEntityCfg("table"),
@@ -186,7 +194,8 @@ class BaseEventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "mass_distribution_params": (0.7, 1.3),
+            "mass_distribution_params": (1.0, 1.0),
+            # "mass_distribution_params": (0.7, 1.3),
             "operation": "scale",
             "distribution": "uniform",
             "recompute_inertia": True,
@@ -199,7 +208,8 @@ class BaseEventCfg:
         params={
             "asset_cfg": SceneEntityCfg("insertive_object"),
             # we assume insertive object is somewhere between 20g and 200g
-            "mass_distribution_params": (0.02, 0.2),
+            # "mass_distribution_params": (0.02, 0.2),
+            "mass_distribution_params": (0.11, 0.11),
             "operation": "abs",
             "distribution": "uniform",
             "recompute_inertia": True,
@@ -211,7 +221,8 @@ class BaseEventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("receptive_object"),
-            "mass_distribution_params": (0.5, 1.5),
+            "mass_distribution_params": (0.75, 0.75),
+            # "mass_distribution_params": (0.5, 1.5),
             "operation": "scale",
             "distribution": "uniform",
             "recompute_inertia": True,
@@ -223,7 +234,8 @@ class BaseEventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("table"),
-            "mass_distribution_params": (0.5, 1.5),
+            "mass_distribution_params": (0.75, 0.75),
+            # "mass_distribution_params": (0.5, 1.5),
             "operation": "scale",
             "distribution": "uniform",
             "recompute_inertia": True,
@@ -235,8 +247,10 @@ class BaseEventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["shoulder.*", "elbow.*", "wrist.*", "finger_joint"]),
-            "friction_distribution_params": (0.25, 4.0),
-            "armature_distribution_params": (0.25, 4.0),
+            # "friction_distribution_params": (0.25, 4.0),
+            "friction_distribution_params": (0.325, 0.325),
+            # "armature_distribution_params": (0.25, 4.0),
+            "armature_distribution_params": (0.325, 0.325),
             "operation": "scale",
             "distribution": "log_uniform",
         },
@@ -247,8 +261,10 @@ class BaseEventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["finger_joint"]),
-            "stiffness_distribution_params": (0.5, 2.0),
-            "damping_distribution_params": (0.5, 2.0),
+            # "stiffness_distribution_params": (0.5, 2.0),
+            "stiffness_distribution_params": (1.25, 1.25),
+            # "damping_distribution_params": (0.5, 2.0),
+            "damping_distribution_params": (1.25, 1.25),
             "operation": "scale",
             "distribution": "log_uniform",
         },
@@ -262,26 +278,7 @@ class BaseEventCfg:
     # reset_everything = EventTerm(func=omni_reset_mdp.reset_scene_to_default, mode="reset", params={})
 
 @configclass
-class OmniResetTrainEventCfg(BaseEventCfg):
-    """Configuration for training events."""
-
-    reset_from_reset_states = EventTerm(
-        func=omni_reset_mdp.MultiResetManager,
-        mode="reset",
-        params={
-            "base_paths": [
-                f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEAnywhere",
-                f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectRestingEEGrasped",
-                f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEGrasped",
-                f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectPartiallyAssembledEEGrasped",
-            ],
-            "probs": [0.25, 0.25, 0.25, 0.25],
-            "success": "env.reward_manager.get_term_cfg('progress_context').func.success",
-        },
-    )
-
-@configclass
-class BaseFromDemoEventCfg:
+class BaseFromDemoEventCfg(BaseEventCfg):
 
     reset_everything = EventTerm(func=omni_reset_mdp.reset_scene_to_default, mode="reset", params={})
 
@@ -762,15 +759,15 @@ class TrainingObservationsCfg(DebugObservationsCfg):
         """Observations for tracking critic group."""
         context_obs = ObsTerm(
             func=from_demo_mdp.get_supervision_demo_obs,
-            params={"observation_keys":["joint_pos", "end_effector_pose"]
+            params={"observation_keys":["joint_pos", "end_effector_pose", "insertive_asset_pose"]
             },
         )
         context_actions = ObsTerm(
             func=from_demo_mdp.get_supervision_demo_actions,
         )
-        # context_rewards = ObsTerm(
-        #     func=from_demo_mdp.get_last_demo_rewards,
-        # )
+        context_rewards = ObsTerm(
+            func=from_demo_mdp.get_last_demo_rewards,
+        )
 
     @configclass
     class ContextCfg(ObsGroup):
@@ -781,6 +778,7 @@ class TrainingObservationsCfg(DebugObservationsCfg):
                 "observation_keys": [
                     "joint_pos",
                     "end_effector_pose",
+                    "insertive_asset_pose"
                 ],
             },
         )
@@ -998,7 +996,17 @@ class FromDemoRewardsCfg:
         func=from_demo_mdp.tracking_end_effector_reward,
         weight=10.0,
         params={
-            "k": 40.0,
+            "k": 1.0,
+            "tolerance": 0.1,
+        },
+    )
+
+    tracking_end_effector_orientation = RewTerm(
+        func=from_demo_mdp.tracking_end_effector_orientation_reward,
+        weight=10.0,
+        params={
+            "k": 5.0,
+            "tolerance": 1.0,
         },
     )
 
@@ -1014,6 +1022,19 @@ class FromDemoRewardsCfg:
         params={
             "insertive_asset_cfg": SceneEntityCfg("insertive_object"),
             "receptive_asset_cfg": SceneEntityCfg("receptive_object"),
+        },
+    )
+
+    demo_success = RewTerm(
+        func=from_demo_mdp.demo_success_reward,
+        weight=10.0,
+    )
+
+    demo_dense_success = RewTerm(
+        func=from_demo_mdp.demo_dense_success_reward,
+        weight=1.0,
+        params={
+            "std": 1.0,
         },
     )
 
@@ -1080,7 +1101,7 @@ class DemoContextPriviledgedCfg(DemoContextCfg):
 @configclass
 class DemoEvalContextCfg:
     # episode_paths: str = "episodes/20260217_124614/episodes_000000.pt" # single episode of peg insertion
-    episode_paths: str = "episodes/20260208_011257/episodes_000000.pt"
+    episode_paths: str = "episodes/20260220_170234/episodes_000000.pt"
     # episode_paths: list[str] = [
     #     "episodes/20260128_011438/episodes_000000.pt",
     # ]
@@ -1102,7 +1123,7 @@ class FromDemoCollectTerminationsCfg:
 
     abnormal_robot = DoneTerm(func=omni_reset_mdp.abnormal_robot_state)
 
-    success = DoneTerm(func=omni_reset_mdp.terminate_on_success, params={"delay_steps": 5})
+    success = DoneTerm(func=omni_reset_mdp.terminate_on_success, params={"delay_steps": 0})
 
 @configclass
 class FromDemoTrainTerminationsCfg:
@@ -1111,8 +1132,9 @@ class FromDemoTrainTerminationsCfg:
 
 @configclass
 class EpisodeTimeoutTerminationsCfg:
-    time_out = DoneTerm(func=omni_reset_mdp.time_out, time_out=True)
-    
+    # time_out = DoneTerm(func=omni_reset_mdp.time_out, time_out=True)
+
+    end_of_demo = DoneTerm(func=from_demo_mdp.end_of_demo)
 
 def make_insertive_object(usd_path: str):
     return RigidObjectCfg(
@@ -1278,6 +1300,7 @@ class Ur5eRobotiq2f85RelJointPosFromDemoSupervisedEvalCfg(Ur5eRobotiq2f85RelJoin
     observations: SupervisedEvalObservationsCfg = SupervisedEvalObservationsCfg()
     context: DemoEvalContextCfg = DemoEvalContextCfg()
     terminations: EpisodeTimeoutTerminationsCfg = EpisodeTimeoutTerminationsCfg()
+
 @configclass
 class Ur5eRobotiq2f85RelJointPosFromDemoPriviledgedTrainCfg(Ur5eRobotiq2f85RlStateCfg):
     """Demo collection configuration for Relative Joint Position action space."""

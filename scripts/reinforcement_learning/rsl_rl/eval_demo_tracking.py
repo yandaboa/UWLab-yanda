@@ -43,6 +43,12 @@ parser.add_argument(
     default=False,
     help="Use open-loop supervised eval (feed context obs as current_obs).",
 )
+parser.add_argument(
+    "--replay_demo_actions",
+    action="store_true",
+    default=False,
+    help="Replay stored demo actions instead of policy outputs.",
+)
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument(
     "--use_pretrained_checkpoint",
@@ -146,6 +152,37 @@ def _update_demo_snapshot(
         demo_obs_snapshot[key][env_ids_cpu] = value[env_ids].detach().cpu()
 
 
+def _resolve_demo_actions(demo_actions: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
+    if isinstance(demo_actions, dict):
+        if "demo" in demo_actions:
+            return demo_actions["demo"]
+        raise RuntimeError("Demo actions not found under 'demo' key.")
+    return demo_actions
+
+
+def _get_replay_actions(demo_context: Any, env: ManagerBasedEnv) -> torch.Tensor:
+    demo_actions = _resolve_demo_actions(demo_context.demo_actions)
+    lengths = demo_context.demo_obs_lengths.to(dtype=torch.long)
+    end_idx = (lengths - 1).clamp(min=0)
+    t = torch.minimum(env.episode_length_buf.long(), end_idx)
+    env_ids = torch.arange(env.num_envs, device=demo_actions.device)
+    # Index per-env, per-timestep action from the stored demo buffer.
+    return demo_actions[env_ids, t, :]
+
+
+def _resolve_context_log_dir(env_cfg: Any) -> str | None:
+    context_cfg = getattr(env_cfg, "context")
+    if isinstance(context_cfg, dict):
+        episode_paths = context_cfg.get("episode_paths")
+    else:
+        episode_paths = getattr(context_cfg, "episode_paths", None)
+    assert episode_paths is not None
+    if isinstance(episode_paths, str):
+        episode_paths = [episode_paths]
+    episode_list = list(episode_paths)
+    resolved = retrieve_file_path(str(episode_list[0]))
+    return os.path.dirname(resolved)
+
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
     """Play with RSL-RL agent."""
@@ -166,34 +203,44 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Loading experiment from directory: {log_root_path}")
-    if args_cli.use_pretrained_checkpoint:
-        resume_path = get_published_pretrained_checkpoint("rsl_rl", train_task_name)
-        if not resume_path:
-            print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
-            return
-    elif args_cli.checkpoint:
-        resume_path = retrieve_file_path(args_cli.checkpoint)
-    else:
-        resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
-
+    replay_demo_actions = args_cli.replay_demo_actions
     use_supervised = args_cli.supervised_context_checkpoint is not None
+    if replay_demo_actions and args_cli.supervised_open_loop:
+        raise ValueError("Open-loop supervised eval is not supported with --replay_demo_actions.")
+    if replay_demo_actions and use_supervised:
+        print("[INFO] Ignoring --supervised_context_checkpoint because --replay_demo_actions is set.")
+        use_supervised = False
     if args_cli.supervised_open_loop and not use_supervised:
         raise ValueError("Open-loop supervised eval requires --supervised_context_checkpoint.")
     supervised_ckpt_path = None
-    if use_supervised:
-        supervised_ckpt_path = retrieve_file_path(args_cli.supervised_context_checkpoint)
-        resume_run_tag = os.path.basename(os.path.dirname(resume_path))
-        resume_ckpt_tag = os.path.splitext(os.path.basename(resume_path))[0]
-        supervised_ckpt_tag = os.path.splitext(os.path.basename(supervised_ckpt_path))[0]
-        log_dir = os.path.join(
-            os.path.dirname(supervised_ckpt_path),
-            "eval_demo_tracking",
-            f"rl_{resume_run_tag}",
-            f"checkpoint_{resume_ckpt_tag}",
-            f"supervised_{supervised_ckpt_tag}",
-        )
+    if replay_demo_actions:
+        context_root = _resolve_context_log_dir(env_cfg)
+        log_base = context_root if context_root is not None else log_root_path
+        log_dir = os.path.join(log_base, "eval_demo_tracking", "replay_demo_actions")
     else:
-        log_dir = os.path.dirname(resume_path)
+        if args_cli.use_pretrained_checkpoint:
+            resume_path = get_published_pretrained_checkpoint("rsl_rl", train_task_name)
+            if not resume_path:
+                print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
+                return
+        elif args_cli.checkpoint:
+            resume_path = retrieve_file_path(args_cli.checkpoint)
+        else:
+            resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+        if use_supervised:
+            supervised_ckpt_path = retrieve_file_path(args_cli.supervised_context_checkpoint)
+            resume_run_tag = os.path.basename(os.path.dirname(resume_path))
+            resume_ckpt_tag = os.path.splitext(os.path.basename(resume_path))[0]
+            supervised_ckpt_tag = os.path.splitext(os.path.basename(supervised_ckpt_path))[0]
+            log_dir = os.path.join(
+                os.path.dirname(supervised_ckpt_path),
+                "eval_demo_tracking",
+                f"rl_{resume_run_tag}",
+                f"checkpoint_{resume_ckpt_tag}",
+                f"supervised_{supervised_ckpt_tag}",
+            )
+        else:
+            log_dir = os.path.dirname(resume_path)
 
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
@@ -231,7 +278,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    if use_supervised and supervised_ckpt_path is not None:
+    policy = None
+    policy_nn = None
+    normalizer = None
+    if replay_demo_actions:
+        print("[INFO]: Replaying stored demo actions (skipping policy checkpoint load).")
+    elif use_supervised and supervised_ckpt_path is not None:
         device = torch.device(env.unwrapped.device)
         checkpoint = torch.load(supervised_ckpt_path, map_location=device)
         supervised_model, _ = ContextSequencePolicy.from_checkpoint(checkpoint, device)
@@ -239,8 +291,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         supervised_obs_keys = supervised_model.cfg.data.obs_keys
         if not supervised_obs_keys:
             raise RuntimeError("Supervised context checkpoint is missing obs_keys.")
-        policy = None
-        policy_nn = None
         print(f"[INFO]: Using supervised context policy from: {args_cli.supervised_context_checkpoint}")
     else:
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
@@ -360,7 +410,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
-            if use_supervised:
+            if args_cli.replay_demo_actions:
+                actions = _get_replay_actions(demo_context, manager_env)
+            elif use_supervised:
                 actions = supervised_helper.act(previous_obs, rollout_storage)
             else:
                 actions = policy(previous_obs)

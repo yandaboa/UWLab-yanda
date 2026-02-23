@@ -40,6 +40,7 @@ class EpisodeStorage:
         states = rollouts.get("states")
         physics = rollouts.get("physics")
         raw_states = rollouts.get("raw_states")
+        success = rollouts.get("success")
 
         env_id_list = self._normalize_env_ids(env_ids, int(lengths.shape[0]))
         for rollout_idx, env_id in enumerate(env_id_list):
@@ -70,6 +71,8 @@ class EpisodeStorage:
             episode["physics"] = self._slice_env_data(physics, rollout_idx)
             if raw_states is not None:
                 episode["raw_states"] = self._slice_env_data(raw_states, rollout_idx)
+            if success is not None:
+                episode["success"] = self._slice_env_data(success, rollout_idx)
             self.episodes.append(episode)
             self.total_episodes += 1
             if len(self.episodes) >= self.max_num_episodes:

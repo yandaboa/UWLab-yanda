@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Optional, cast
+import os
 
 import torch
 import torch.nn as nn
@@ -59,6 +60,7 @@ class LongContextActorCritic(ActorCritic):
         optimizer: Optional[Any] = None,
         log_attention_entropy: bool = False,
         attention_entropy_interval: int = 0,
+        model_finetune_ckpt: str | None = None,
         **kwargs: dict[str, Any],
     ) -> None:
         super().__init__(
@@ -133,9 +135,16 @@ class LongContextActorCritic(ActorCritic):
         self.log_attention_entropy = bool(log_attention_entropy)
         self.attention_entropy_interval = int(attention_entropy_interval or 0)
         self.load_actor_only = False
+        self.model_finetune_ckpt = model_finetune_ckpt
 
         if self.context_keys and isinstance(self.context_keys, str) and self.context_keys in obs:
             self._initialize_transformer(obs)
+        if self.model_finetune_ckpt:
+            if not self._use_transformer_actor():
+                raise ValueError("model_finetune_ckpt requires a transformer actor layout.")
+            if self.context_token_builder is None:
+                raise ValueError("model_finetune_ckpt requires context observations to initialize.")
+            self._load_finetune_checkpoint(self.model_finetune_ckpt)
 
     """
     This function can be called with obs[self.context_keys] as a TensorDict or as a concatenated tensor
@@ -205,6 +214,35 @@ class LongContextActorCritic(ActorCritic):
             nn.Module.load_state_dict(self, filtered_state, strict=False)
             return False
         return super().load_state_dict(state_dict, strict=strict)
+
+    def _load_finetune_checkpoint(self, ckpt_path: str) -> None:
+        if not ckpt_path:
+            return
+        assert isinstance(ckpt_path, str), "model_finetune_ckpt must be a string path."
+        if not os.path.isfile(ckpt_path):
+            raise FileNotFoundError(f"Finetune checkpoint not found: {ckpt_path}")
+        checkpoint = torch.load(ckpt_path, map_location="cpu")
+        if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+            cfg = checkpoint.get("cfg")
+            if isinstance(cfg, dict):
+                model_cfg = cfg.get("model", {})
+                ckpt_layout = model_cfg.get("context_token_layout")
+                if ckpt_layout is not None:
+                    assert (
+                        ckpt_layout == self.context_token_layout
+                    ), "Finetune checkpoint layout must match context_token_layout."
+                ckpt_action_dist = model_cfg.get("action_distribution")
+                if ckpt_action_dist is not None:
+                    assert (
+                        ckpt_action_dist == self.action_distribution
+                    ), "Finetune checkpoint action_distribution must match."
+        else:
+            state_dict = checkpoint
+        assert isinstance(state_dict, dict), "Finetune checkpoint must contain a state_dict."
+        self.enable_actor_only_loading(True)
+        self.load_state_dict(state_dict, strict=False)
+        self.enable_actor_only_loading(False)
     
     def _initialize_transformer(
         self,
@@ -244,12 +282,6 @@ class LongContextActorCritic(ActorCritic):
                     if self.include_rewards_in_context:
                         token_input_dim += self.num_rewards
                     self.context_token_proj = self._make_projection(token_input_dim, token_embed_dim)
-                    if self.share_obs_projection and token_input_dim != num_actor_obs:
-                        raise ValueError(
-                            "share_current_and_context_obs_projection=True requires current_obs and "
-                            "context token features to match. For merged layout this usually means "
-                            "disabling include_actions_in_context/include_rewards_in_context."
-                        )
                     if not self.share_obs_projection:
                         self.current_obs_proj = self._make_projection(num_actor_obs, token_embed_dim)
                 if self.share_obs_projection and self.num_obs != num_actor_obs:

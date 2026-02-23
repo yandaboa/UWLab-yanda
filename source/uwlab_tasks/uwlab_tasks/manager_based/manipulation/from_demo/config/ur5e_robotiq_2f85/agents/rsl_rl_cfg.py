@@ -48,6 +48,9 @@ class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
         action_distribution="normal",
         share_current_and_context_obs_projection=True,
         encoding_projection_hidden_dim=None,
+        model_finetune_ckpt="logs/rsl_rl/supervised_context/2026-02-22_18-04-35/model_020000.pt",
+        log_attention_entropy=True,
+        attention_entropy_interval=10,
 
         cross_attention_merge=True,
         obs_token_count=1,
@@ -74,6 +77,7 @@ class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.0001,
         num_learning_epochs=2,
         num_mini_batches=4,
+        num_minibatches_per_update=1,
         learning_rate=1.0e-4,
         schedule="adaptive",
         gamma=0.99,
