@@ -641,6 +641,8 @@ class LongContextActorCritic(ActorCritic):
             current_obs_proj=current_obs_proj,
             current_obs_dim=self.current_obs_dim,
         )
+        if output.tokens.isnan().any():
+            raise ValueError("NaN detected in tokens.")
         return output.tokens, output.padding_mask, output.token_indices
 
     def _build_state_action_transformer_tokens_from_context(

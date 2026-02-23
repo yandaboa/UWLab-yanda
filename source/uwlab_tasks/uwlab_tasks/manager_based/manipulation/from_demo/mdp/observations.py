@@ -1,7 +1,9 @@
 import torch
+from typing import cast
 from isaaclab.envs import ManagerBasedEnv
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.assets import Articulation
+from isaaclab.sensors import ContactSensor
 import isaaclab.utils.math as math_utils
 
 def demo_link_quats(
@@ -66,3 +68,17 @@ def end_effector_quat(
         q_link_w = math_utils.quat_mul(q_root_inv, q_link_w)
 
     return math_utils.normalize(q_link_w)
+
+
+def receptive_object_gripped_by_ee(
+    env: ManagerBasedEnv,
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("receptive_object_grip_contact"),
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Binary contact flag for receptive-object contact with gripper/EE links."""
+    contact_sensor = cast(ContactSensor, env.scene.sensors[sensor_cfg.name])
+    force_matrix_w = contact_sensor.data.force_matrix_w
+    assert force_matrix_w is not None, "Contact sensor must define filter_prim_paths_expr for grip detection."
+    # force_matrix_w has shape [num_envs, num_sensor_bodies, num_filters, 3]
+    in_contact = torch.linalg.norm(force_matrix_w, dim=-1) > force_threshold
+    return in_contact.any(dim=(1, 2)).to(force_matrix_w.dtype).unsqueeze(-1)

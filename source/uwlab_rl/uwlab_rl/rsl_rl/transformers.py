@@ -329,7 +329,12 @@ class TransformerActor(nn.Module):
         hidden = self._select_tokens(hidden, token_indices)
         self._last_hidden = hidden
         self._last_features = self.action_head[:-1](hidden)
-        return self.action_head[-1](self._last_features)
+        output = self.action_head[-1](self._last_features)
+        if self._last_hidden.isnan().any() or output.isnan().any():
+            raise ValueError("NaN detected in last hidden or output.")
+        output = output.clamp_min(-50.0)
+        output = output.clamp_max(50.0)
+        return output
 
     def get_last_hidden_features(
         self,

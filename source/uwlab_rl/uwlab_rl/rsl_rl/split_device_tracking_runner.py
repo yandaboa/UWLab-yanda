@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import copy
+import io
 import os
 import time
 from collections import deque
@@ -19,10 +19,29 @@ class SplitDeviceTrackingOnPolicyRunner(TrackingOnPolicyRunner):
 
     def __init__(self, env, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
         super().__init__(env, train_cfg, log_dir=log_dir, device=device)
-        self.rollout_policy = copy.deepcopy(self.alg.policy).to(self.env.device)
+        self.rollout_policy = self._clone_policy_for_rollout()
+
+    def _clone_policy_for_rollout(self):
+        # deepcopy can fail on modules with non-leaf cached tensors; serialize/deserialize is more robust.
+        buffer = io.BytesIO()
+        torch.save(self.alg.policy, buffer)
+        buffer.seek(0)
+        try:
+            rollout_policy = torch.load(buffer, map_location=self.env.device, weights_only=False)
+        except TypeError:
+            rollout_policy = torch.load(buffer, map_location=self.env.device)
+        return rollout_policy
 
     def _sync_rollout_policy(self) -> None:
         self.rollout_policy.load_state_dict(self.alg.policy.state_dict())
+
+    def _sync_rollout_normalizers(self) -> None:
+        for attr_name in ("actor_obs_normalizer", "critic_obs_normalizer"):
+            train_norm = getattr(self.alg.policy, attr_name, None)
+            rollout_norm = getattr(self.rollout_policy, attr_name, None)
+            assert train_norm is not None and rollout_norm is not None, "Normalizers must be present."
+            assert hasattr(train_norm, "state_dict") and hasattr(rollout_norm, "load_state_dict"), "Normalizers must have state_dict and load_state_dict."
+            rollout_norm.load_state_dict(train_norm.state_dict())
 
     def train_mode(self):
         super().train_mode()
@@ -116,6 +135,8 @@ class SplitDeviceTrackingOnPolicyRunner(TrackingOnPolicyRunner):
                     )
 
                     self.alg.process_env_step(obs, rewards, dones, extras)
+                    # Keep rollout normalizers aligned with the train policy after train-policy normalization update.
+                    self._sync_rollout_normalizers()
 
                     if self.rollout_policy.is_recurrent:
                         self.rollout_policy.reset(dones_env)

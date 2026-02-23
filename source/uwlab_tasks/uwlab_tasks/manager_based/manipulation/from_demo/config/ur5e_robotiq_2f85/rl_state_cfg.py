@@ -18,6 +18,7 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.envs.mdp import events as mdp_events
@@ -75,6 +76,7 @@ class RlStateSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.UsdFileCfg(
             usd_path=f"{UWLAB_CLOUD_ASSETS_DIR}/Props/Custom/PegHole/peg_hole.usd",
             scale=(1, 1, 1),
+            activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 solver_position_iteration_count=4,
                 solver_velocity_iteration_count=0,
@@ -86,6 +88,17 @@ class RlStateSceneCfg(InteractiveSceneCfg):
             mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0)),
+    )
+    receptive_object_grip_contact = ContactSensorCfg(
+        prim_path="{ENV_REGEX_NS}/ReceptiveObject",
+        history_length=1,
+        # Filter contact reports to gripper links, so this tracks EE/receptive-object interaction only.
+        filter_prim_paths_expr=[
+            "{ENV_REGEX_NS}/Robot/robotiq_base_link",
+            "{ENV_REGEX_NS}/Robot/.*finger.*",
+            "{ENV_REGEX_NS}/Robot/.*inner.*",
+            "{ENV_REGEX_NS}/Robot/.*outer.*",
+        ],
     )
 
     # Environment
@@ -611,6 +624,14 @@ class DebugObservationsCfg(ObservationsCfg):
             },
         )
 
+        receptive_object_gripped = ObsTerm(
+            func=from_demo_mdp.receptive_object_gripped_by_ee,
+            params={
+                "sensor_cfg": SceneEntityCfg("receptive_object_grip_contact"),
+                "force_threshold": 1.0,
+            },
+        )
+
         def __post_init__(self):
             self.enable_corruption = False
             self.concatenate_terms = False
@@ -717,15 +738,15 @@ class POMDPPolicyCfg(ObsGroup):
         },
     )
 
-    # insertive_asset_pose = ObsTerm(
-    #     func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
-    #     params={
-    #         "target_asset_cfg": SceneEntityCfg("insertive_object"),
-    #         "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
-    #         "root_asset_offset_metadata_key": "gripper_offset",
-    #         "rotation_repr": "axis_angle",
-    #     },
-    # )
+    insertive_asset_pose = ObsTerm(
+        func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
+        params={
+            "target_asset_cfg": SceneEntityCfg("insertive_object"),
+            "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+            "root_asset_offset_metadata_key": "gripper_offset",
+            "rotation_repr": "axis_angle",
+        },
+    )
 
     # receptive_asset_pose = ObsTerm(
     #     func=omni_reset_mdp.target_asset_pose_in_root_asset_frame,
@@ -1032,7 +1053,7 @@ class FromDemoRewardsCfg:
 
     demo_dense_success = RewTerm(
         func=from_demo_mdp.demo_dense_success_reward,
-        weight=1.0,
+        weight=20.0,
         params={
             "std": 1.0,
         },
@@ -1053,7 +1074,7 @@ class PriviledgedFromDemoRewardsCfg(FromDemoRewardsCfg):
 class DemoContextCfg:
     # episode_paths: str = "episodes/20260208_025923/episodes_000000.pt"
     episode_paths: list[str] = [
-        "episodes/20260208_011257/episodes_000000.pt",
+        "episodes/20260222_164621/episodes_000000_trim_train90_train.pt",
         # "episodes/20260208_011257/episodes_000001.pt",
         # "episodes/20260208_011257/episodes_000002.pt",
         # "episodes/20260208_011257/episodes_000003.pt",
@@ -1127,7 +1148,7 @@ class FromDemoCollectTerminationsCfg:
 
 @configclass
 class FromDemoTrainTerminationsCfg:
-    # abnormal_robot = DoneTerm(func=omni_reset_mdp.abnormal_robot_state)
+    abnormal_robot = DoneTerm(func=omni_reset_mdp.abnormal_robot_state)
     end_of_demo = DoneTerm(func=from_demo_mdp.end_of_demo)
 
 @configclass
@@ -1160,6 +1181,7 @@ def make_receptive_object(usd_path: str):
         spawn=sim_utils.UsdFileCfg(
             usd_path=usd_path,
             scale=(1, 1, 1),
+            activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 solver_position_iteration_count=4,
                 solver_velocity_iteration_count=0,
