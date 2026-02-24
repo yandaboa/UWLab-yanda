@@ -192,6 +192,37 @@ def subset_episodes(
         print(f"[INFO] Wrote {out_path} (episodes: {len(subset)}/{len(episodes)})")
 
 
+def random_subset_episodes(
+    paths: Iterable[Path],
+    output_dir: Path | None,
+    num_episodes: int,
+    seed: int,
+) -> None:
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    suffix = "_subsetx"
+    for path in paths:
+        data = torch.load(path, map_location="cpu")
+        episodes = _normalize_episodes(data)
+        total = len(episodes)
+        if total == 0:
+            subset: list[dict[str, Any]] = []
+        else:
+            keep = min(num_episodes, total)
+            generator = torch.Generator().manual_seed(seed)
+            perm = torch.randperm(total, generator=generator).tolist()
+            subset_indices = perm[:keep]
+            subset = [episodes[i] for i in subset_indices]
+        if isinstance(data, dict) and "episodes" in data:
+            new_data = dict(data)
+            new_data["episodes"] = subset
+        else:
+            new_data = {"episodes": subset}
+        out_path = _output_path(path, output_dir, suffix)
+        torch.save(new_data, out_path)
+        print(f"[INFO] Wrote {out_path} (episodes: {len(subset)}/{len(episodes)})")
+
+
 def split_episodes_train_val(
     path: Path,
     output_dir: Path | None,
@@ -256,6 +287,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Write a dataset with only the first N episodes.",
     )
+    mode.add_argument(
+        "--random-subset-episodes",
+        action="store_true",
+        help="Write a dataset with N randomly sampled episodes using postfix _subsetx.",
+    )
     parser.add_argument(
         "--output-dir",
         type=str,
@@ -280,6 +316,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Number of episodes to keep when creating a subset.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed used for random subset sampling.",
+    )
     return parser.parse_args()
 
 
@@ -297,6 +339,10 @@ def main() -> None:
         if args.num_episodes is None or args.num_episodes <= 0:
             raise ValueError("--num-episodes must be a positive integer when using --subset-episodes.")
         subset_episodes(paths, output_dir, args.num_episodes)
+    elif args.random_subset_episodes:
+        if args.num_episodes is None or args.num_episodes <= 0:
+            raise ValueError("--num-episodes must be a positive integer when using --random-subset-episodes.")
+        random_subset_episodes(paths, output_dir, args.num_episodes, args.seed)
 
 
 if __name__ == "__main__":

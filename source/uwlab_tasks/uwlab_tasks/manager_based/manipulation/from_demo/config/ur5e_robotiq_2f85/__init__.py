@@ -45,7 +45,7 @@ gym.register(
     entry_point="uwlab_tasks.manager_based.manipulation.from_demo.env:FromDemoEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.rl_state_cfg:Ur5eRobotiq2f85RelJointPosFromDemoTrainCfg",
+        "env_cfg_entry_point": f"{__name__}.rl_state_cfg:Ur5eRobotiq2f85RelJointPosFromDemoEvalCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_cfg:PPOWithContextRunnerCfg",
     },
 )

@@ -301,6 +301,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             agent_cfg_dict["policy"] = policy_cfg
         if "bc_warmstart_cfg" in agent_cfg_dict.get("algorithm", {}):
             agent_cfg_dict["algorithm"].pop("bc_warmstart_cfg")
+        agent_cfg_dict["policy"]["model_finetune_ckpt"] = None
         # load previously trained model
         if agent_cfg.class_name == "OnPolicyRunner":
             runner = OnPolicyRunner(env, agent_cfg_dict, log_dir=None, device=agent_cfg.device)

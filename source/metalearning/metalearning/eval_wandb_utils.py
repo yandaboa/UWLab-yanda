@@ -52,11 +52,13 @@ class EvalWandbLogger:
         if self._run is None:
             return
         joint = tracking_term.metrics["joint_tracking_error"].mean().item()
-        ee = tracking_term.metrics["ee_tracking_error"].mean().item()
+        ee = tracking_term.metrics["ee_position_tracking_error"].mean().item()
+        ee_rot = tracking_term.metrics["ee_orientation_tracking_error"].mean().item()
         self._run.log(
             {
                 "eval/joint_tracking_error": joint,
                 "eval/ee_tracking_error": ee,
+                "eval/ee_orientation_tracking_error": ee_rot,
             },
             step=total_env_steps,
         )

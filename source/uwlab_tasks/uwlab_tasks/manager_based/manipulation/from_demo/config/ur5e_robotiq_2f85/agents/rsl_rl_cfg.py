@@ -26,14 +26,14 @@ class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
     logger = "wandb"
     policy = RslRlFancyTransformerHistoryActorCriticCfg(
         class_name="LongContextActorCritic",
-        init_noise_std=5.0,
+        init_noise_std=0.5,
         actor_obs_normalization=False,
         critic_obs_normalization=True,
         actor_hidden_dims=[512],
         # actor_hidden_dims=[256, 128],
         critic_hidden_dims=[512, 256, 128, 64],
         activation="elu",
-        noise_std_type="scalar",
+        noise_std_type="gsde",
         state_dependent_std=False,
 
         embedding_dim=256,
@@ -44,11 +44,14 @@ class PPOWithContextRunnerCfg(RslRlOnPolicyRunnerCfg):
         attention_dropout=0.0,
         residual_dropout=0.0,
 
-        context_token_layout="state_action",
+        context_token_layout="merged",
+        include_actions_in_context=False,
+        include_rewards_in_context=True,
+
         action_distribution="normal",
         share_current_and_context_obs_projection=True,
         encoding_projection_hidden_dim=None,
-        model_finetune_ckpt="logs/rsl_rl/supervised_context/2026-02-22_18-04-35/model_010000.pt",
+        model_finetune_ckpt="logs/rsl_rl/supervised_context/2026-02-22_18-04-35/model_020000.pt",
         log_attention_entropy=True,
         attention_entropy_interval=10,
 

@@ -709,6 +709,33 @@ class SupervisedEvalObsCfg(ObsGroup):
         },
     )
 
+    insertive_asset_pose = ObsTerm(
+        func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
+        params={
+            "target_asset_cfg": SceneEntityCfg("insertive_object"),
+            "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+            "root_asset_offset_metadata_key": "gripper_offset",
+            "rotation_repr": "axis_angle",
+        },
+    )
+
+    receptive_asset_pose = ObsTerm(
+        func=omni_reset_mdp.target_asset_pose_in_root_asset_frame,
+        params={
+            "target_asset_cfg": SceneEntityCfg("receptive_object"),
+            "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+            "rotation_repr": "axis_angle",
+        },
+    )
+
+    insertive_asset_in_receptive_asset_frame: ObsTerm = ObsTerm(
+        func=omni_reset_mdp.target_asset_pose_in_root_asset_frame,
+        params={
+            "target_asset_cfg": SceneEntityCfg("insertive_object"),
+            "root_asset_cfg": SceneEntityCfg("receptive_object"),
+            "rotation_repr": "axis_angle",
+        },
+    )
 
     def __post_init__(self):
         self.enable_corruption = False
@@ -1074,16 +1101,8 @@ class PriviledgedFromDemoRewardsCfg(FromDemoRewardsCfg):
 class DemoContextCfg:
     # episode_paths: str = "episodes/20260208_025923/episodes_000000.pt"
     episode_paths: list[str] = [
-        "episodes/20260222_164621/episodes_000000_trim_train90_train.pt",
-        # "episodes/20260208_011257/episodes_000001.pt",
-        # "episodes/20260208_011257/episodes_000002.pt",
-        # "episodes/20260208_011257/episodes_000003.pt",
-        # "episodes/20260208_011257/episodes_000004.pt",
-        # "episodes/20260208_011257/episodes_000005.pt",
-        # "episodes/20260208_011257/episodes_000006.pt",
-        # "episodes/20260208_011257/episodes_000007.pt",
-        # "episodes/20260208_011257/episodes_000008.pt",
-        # "episodes/20260208_011257/episodes_000009.pt",
+        # "episodes/20260222_164621/episodes_000000_trim_train90_train.pt",
+        "episodes/20260222_155251/episodes_000001_trim.pt",
     ]
     # episode_paths: list[str] = [ # peg tracking
     #     "episodes/20260202_173353/episodes_000000.pt",
@@ -1099,7 +1118,7 @@ class DemoContextCfg:
     # ]
     state_noise_scale: float = 0.0
     download_dir: str | None = None
-    use_raw_states: bool = True
+    use_raw_states: bool = False
 
 @configclass
 class DemoContextPriviledgedCfg(DemoContextCfg):
@@ -1122,7 +1141,8 @@ class DemoContextPriviledgedCfg(DemoContextCfg):
 @configclass
 class DemoEvalContextCfg:
     # episode_paths: str = "episodes/20260217_124614/episodes_000000.pt" # single episode of peg insertion
-    episode_paths: str = "episodes/20260220_170234/episodes_000000.pt"
+    episode_paths: str = "episodes/20260222_155251/episodes_000002_trim_subsetx.pt"
+    # episode_paths: str = "episodes/20260222_164621/episodes_000000_trim_train90_train.pt"
     # episode_paths: list[str] = [
     #     "episodes/20260128_011438/episodes_000000.pt",
     # ]

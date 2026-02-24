@@ -54,8 +54,8 @@ python -m torch.distributed.run \
     --logger wandb \
     --headless \
     --distributed \
-    env.scene.insertive_object=rectangle \
-    env.scene.receptive_object=walldd
+    env.scene.insertive_object=peg \
+    env.scene.receptive_object=peghole
 
 running evals to see how well something tracks a demo:
 python scripts/reinforcement_learning/rsl_rl/eval_demo_tracking.py --task OmniFromDemo-UR5eRobotiq2f85-Eval-v0 --num_rollouts 50 --num_envs 32 --checkpoint cube_tracking_transformer_actor.pt --headless env.scene.insertive_object=rectangle env.scene.receptive_object=wall

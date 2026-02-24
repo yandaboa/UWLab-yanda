@@ -20,14 +20,21 @@ class SupervisedContextDataCfg:
 
     train_episode_paths: list[str] | None = field(
         default_factory=lambda: [
-            "episodes/20260222_164621/episodes_000000_trim_train90_train.pt",
+            "episodes/20260222_155251/episodes_000002_trim.pt",
+            "episodes/20260222_155251/episodes_000003_trim.pt",
+            "episodes/20260222_155251/episodes_000004_trim.pt",
+            "episodes/20260222_155251/episodes_000005_trim.pt",
+            "episodes/20260222_155251/episodes_000006_trim.pt",
+            "episodes/20260222_155251/episodes_000007_trim.pt",
+            "episodes/20260222_155251/episodes_000008_trim.pt",
+            "episodes/20260222_155251/episodes_000009_trim.pt",
         ]
     )
     """List of episode .pt files or glob patterns for training."""
 
     validation_episode_paths: list[str] | None = field(
         default_factory=lambda: [
-            "episodes/20260222_164621/episodes_000000_trim_train90_eval.pt",
+            "episodes/20260222_155251/episodes_000000_trim.pt",
         ]
     )
     """Optional list of episode .pt files or glob patterns for validation."""
@@ -48,13 +55,13 @@ class SupervisedContextDataCfg:
     )
     """Deprecated single dataset list (used when train paths are unset)."""
 
-    obs_keys: list[str] | None = field(default_factory=lambda: ["joint_pos", "end_effector_pose", "insertive_asset_pose"])
+    obs_keys: list[str] | None = field(default_factory=lambda: ["joint_pos", "end_effector_pose", "insertive_asset_pose", "receptive_asset_pose", "insertive_asset_in_receptive_asset_frame"])
     """Optional ordered obs keys for dict observations."""
 
     max_context_length: int | None = None
     """Optional cap on context length per episode."""
 
-    batch_size: int = 64
+    batch_size: int = 256
     """Batch size for training."""
 
     num_workers: int = 4
