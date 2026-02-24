@@ -52,9 +52,18 @@ class ContextSequencePolicy(nn.Module):
             self.context_token_proj = self._make_projection(token_input_dim, token_dim)
             if not self.share_obs_projection:
                 self.current_obs_proj = self._make_projection(obs_dim, token_dim)
+
+        # Action-target normalization parameters. Stored as buffers so they are saved in checkpoints.
+        # When normalization is disabled, these remain (mean=0, std=1) so transforms are no-ops.
+        self.register_buffer("action_norm_mean", torch.zeros(action_dim, dtype=torch.float32))
+        self.register_buffer("action_norm_std", torch.ones(action_dim, dtype=torch.float32))
+        self.action_norm_mean: torch.Tensor
+        self.action_norm_std: torch.Tensor
+
         self.action_bins = action_bins
         self.action_bin_values = action_bin_values
-        if cfg.model.action_distribution == "categorical":
+        action_distribution = cfg.model.action_distribution
+        if action_distribution == "categorical":
             assert action_bins is not None and len(action_bins) > 0, (
                 "Categorical actions require action_bins."
             )
@@ -75,7 +84,25 @@ class ContextSequencePolicy(nn.Module):
                 embedding_dropout=cfg.model.embedding_dropout,
                 causal=True,
             )
-        else:
+        elif action_distribution == "normal":
+            self.actor = TransformerActor(
+                input_dim=token_dim,
+                num_actions=cfg.model.num_actions * 2,
+                actor_hidden_dims=[cfg.model.hidden_dim],
+                action_bins=action_bins,
+                categorical_actions=False,
+                embedding_dim=cfg.model.embedding_dim,
+                hidden_dim=cfg.model.hidden_dim,
+                num_layers=cfg.model.num_layers,
+                num_heads=cfg.model.num_heads,
+                max_len=101,
+                attention_dropout=cfg.model.attention_dropout,
+                residual_dropout=cfg.model.residual_dropout,
+                embedding_dropout=cfg.model.embedding_dropout,
+                causal=True,
+            )
+        elif action_distribution == "scalar":
+            # Legacy regression-only behavior (predict action mean directly).
             self.actor = TransformerActor(
                 input_dim=token_dim,
                 num_actions=cfg.model.num_actions,
@@ -92,6 +119,8 @@ class ContextSequencePolicy(nn.Module):
                 embedding_dropout=cfg.model.embedding_dropout,
                 causal=True,
             )
+        else:
+            raise ValueError(f"Unsupported action_distribution: {action_distribution}")
         self.token_builder = ContextTokenBuilder(
             layout=cfg.model.context_token_layout,
             context_length_override=cfg.data.max_context_length,
@@ -99,6 +128,32 @@ class ContextSequencePolicy(nn.Module):
             include_rewards=cfg.model.include_rewards_in_context,
             share_obs_projection=cfg.model.share_current_and_context_obs_projection,
         )
+
+    def set_action_normalization(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        """Set action normalization (mean/std) used for supervised losses and inference unnormalization."""
+        if mean.ndim != 1 or std.ndim != 1:
+            raise ValueError("Action normalization mean/std must be 1D tensors.")
+        if mean.shape != self.action_norm_mean.shape or std.shape != self.action_norm_std.shape:
+            raise ValueError(
+                f"Action normalization shape mismatch: expected {self.action_norm_mean.shape}, "
+                f"got mean={mean.shape}, std={std.shape}."
+            )
+        self.action_norm_mean.copy_(mean.to(device=self.action_norm_mean.device, dtype=self.action_norm_mean.dtype))
+        self.action_norm_std.copy_(std.to(device=self.action_norm_std.device, dtype=self.action_norm_std.dtype))
+
+    def _normalize_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        if not bool(getattr(self.cfg.model, "normalize_action_targets", False)):
+            return actions
+        mean = self.action_norm_mean.to(device=actions.device, dtype=actions.dtype)
+        std = self.action_norm_std.to(device=actions.device, dtype=actions.dtype)
+        return (actions - mean) / std
+
+    def _unnormalize_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        if not bool(getattr(self.cfg.model, "normalize_action_targets", False)):
+            return actions
+        mean = self.action_norm_mean.to(device=actions.device, dtype=actions.dtype)
+        std = self.action_norm_std.to(device=actions.device, dtype=actions.dtype)
+        return actions * std + mean
 
     def _make_projection(self, input_dim: int, output_dim: int) -> nn.Module:
         hidden_dim = self.projection_hidden_dim
@@ -133,6 +188,12 @@ class ContextSequencePolicy(nn.Module):
         demo_lengths: torch.Tensor,
         current_obs: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if (
+            bool(getattr(self.cfg.model, "normalize_action_targets", False))
+            and self.cfg.model.action_distribution in {"normal", "scalar"}
+            and (self.layout == "state_action" or self.include_actions)
+        ):
+            demo_actions = self._normalize_actions(demo_actions)
         output = self.token_builder.build_tokens_from_context(
             demo_obs=demo_obs,
             demo_actions=demo_actions,
@@ -158,13 +219,28 @@ class ContextSequencePolicy(nn.Module):
         tokens, padding_mask, token_indices = self.build_tokens(
             demo_obs, demo_actions, demo_rewards, demo_lengths, current_obs
         )
-        if self.cfg.model.action_distribution == "categorical":
+        action_distribution = self.cfg.model.action_distribution
+        if action_distribution == "categorical":
             assert isinstance(self.actor, ARDiscreteTransformerActor)
             assert self.action_bins is not None, "action_bins must be provided for categorical actions."
             action_indices = self.actor.act(tokens, padding_mask=padding_mask, token_indices=token_indices)
             return indices_to_actions(action_indices, self.action_bins, self.action_bin_values)
         assert isinstance(self.actor, TransformerActor)
-        return self.actor(tokens, padding_mask=padding_mask, token_indices=token_indices)
+        preds = self.actor(tokens, padding_mask=padding_mask, token_indices=token_indices)
+        if action_distribution == "scalar":
+            return self._unnormalize_actions(preds)
+        if action_distribution == "normal":
+            action_mean, _ = self._split_normal_action_params(preds)
+            return self._unnormalize_actions(action_mean)
+        raise RuntimeError(f"Unexpected action_distribution at act(): {action_distribution}")
+
+    def _split_normal_action_params(self, normal_params: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        expected_dim = int(self.cfg.model.num_actions) * 2
+        assert normal_params.shape[-1] == expected_dim, (
+            f"Expected normal action params to have size {expected_dim}, got {normal_params.shape[-1]}."
+        )
+        action_mean, action_log_std = torch.chunk(normal_params, 2, dim=-1)
+        return action_mean, action_log_std
 
     def compute_supervised_loss(
         self,
@@ -178,7 +254,8 @@ class ContextSequencePolicy(nn.Module):
         tokens, padding_mask, token_indices = self.build_tokens(
             demo_obs, demo_actions, demo_rewards, demo_lengths, current_obs
         )
-        if self.cfg.model.action_distribution == "categorical":
+        action_distribution = self.cfg.model.action_distribution
+        if action_distribution == "categorical":
             assert self.action_bins is not None, "action_bins must be provided for categorical actions."
             assert isinstance(self.actor, ARDiscreteTransformerActor)
             target_idx = actions_to_indices(target_action, self.action_bins, self.action_bin_values)
@@ -190,7 +267,14 @@ class ContextSequencePolicy(nn.Module):
             )
         assert isinstance(self.actor, TransformerActor)
         preds = self.actor(tokens, padding_mask=padding_mask, token_indices=token_indices)
-        return F.mse_loss(preds, target_action)
+        norm_target_action = self._normalize_actions(target_action)
+        if action_distribution == "scalar":
+            return F.mse_loss(preds, norm_target_action)
+        if action_distribution == "normal":
+            action_mean, action_log_std = self._split_normal_action_params(preds)
+            action_var = torch.exp(2.0 * action_log_std).clamp_min(1.0e-8)
+            return F.gaussian_nll_loss(action_mean, norm_target_action, action_var, reduction="mean")
+        raise RuntimeError(f"Unexpected action_distribution at compute_supervised_loss(): {action_distribution}")
 
     def get_state_dict_payload(self) -> dict[str, Any]:
         return {
@@ -224,5 +308,35 @@ class ContextSequencePolicy(nn.Module):
             action_bins=action_bins,
             action_bin_values=action_bin_values,
         ).to(device)
-        model.load_state_dict(checkpoint["state_dict"], strict=True)
+        state_dict = checkpoint["state_dict"]
+
+        def _load_allowing_missing_action_norm(target: "ContextSequencePolicy") -> None:
+            incompatible = target.load_state_dict(state_dict, strict=False)
+            allowed_missing = {"action_norm_mean", "action_norm_std"}
+            missing = set(incompatible.missing_keys)
+            unexpected = set(incompatible.unexpected_keys)
+            extra_missing = missing - allowed_missing
+            if unexpected or extra_missing:
+                raise RuntimeError(
+                    "Unexpected checkpoint incompatibility. "
+                    f"missing={sorted(extra_missing)} unexpected={sorted(unexpected)}"
+                )
+
+        try:
+            _load_allowing_missing_action_norm(model)
+        except RuntimeError as e:
+            # Backwards compatibility: older checkpoints stored regression heads under action_distribution=\"normal\".
+            if cfg.model.action_distribution == "normal":
+                cfg.model.action_distribution = "scalar"
+                model = ContextSequencePolicy(
+                    cfg,
+                    obs_dim,
+                    action_dim,
+                    reward_dim,
+                    action_bins=action_bins,
+                    action_bin_values=action_bin_values,
+                ).to(device)
+                _load_allowing_missing_action_norm(model)
+            else:
+                raise e
         return model, meta

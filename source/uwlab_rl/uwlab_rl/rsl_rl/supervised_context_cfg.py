@@ -78,11 +78,25 @@ class SupervisedContextModelCfg:
     num_actions: int = 7  # type: ignore
     """Action dimension (always inferred from data or checkpoint state, overrides this value. This is just a placeholder)."""
 
-    action_distribution: Literal["normal", "categorical"] = "normal"
-    """Action distribution type."""
+    action_distribution: Literal["normal", "scalar", "categorical"] = "normal"
+    """Action distribution type.
+
+    - normal: diagonal Gaussian (predict mean and log_std; uses Gaussian NLL)
+    - scalar: regression-only (predict mean; uses MSE) (legacy behavior)
+    - categorical: discretized actions (uses cross-entropy)
+    """
 
     action_discretization_spec_path: str = ""
     """Optional path to action discretization spec (defaults to episode folder)."""
+
+    normalize_action_targets: bool = True
+    """Normalize target actions to ~N(0,1) for supervised losses (scalar/normal only)."""
+
+    action_norm_num_batches: int = 32
+    """Number of training batches to estimate action mean/std at startup."""
+
+    action_norm_min_std: float = 1.0e-6
+    """Minimum per-dimension std clamp when estimating action normalization."""
 
     context_token_layout: str = "merged"
     """Token layout: merged, state_action, state_only."""
@@ -112,7 +126,7 @@ class SupervisedContextModelCfg:
 class SupervisedContextOptimizationCfg:
     """Optimization configuration for supervised context training."""
 
-    num_steps: int = 100000
+    num_steps: int = 150000
     """Total optimizer steps."""
 
     learning_rate: float = 3.0e-4

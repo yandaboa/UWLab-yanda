@@ -107,6 +107,42 @@ def main() -> None:
         assert spec is not None, "Categorical actions require action discretization spec."
         action_bins = resolve_action_bins(spec, action_dim)
         action_bin_values = resolve_action_bin_values(spec, action_dim)
+
+    # Estimate action normalization from a few training batches (optional).
+    action_norm_mean = torch.zeros(action_dim, device=device, dtype=torch.float64)
+    action_norm_sumsq = torch.zeros(action_dim, device=device, dtype=torch.float64)
+    action_norm_count = torch.tensor(0.0, device=device, dtype=torch.float64)
+    if (
+        bool(getattr(cfg.model, "normalize_action_targets", False))
+        and cfg.model.action_distribution in {"normal", "scalar"}
+    ):
+        num_batches = int(min(getattr(cfg.model, "action_norm_num_batches", 0), len(loader)))
+        if num_batches <= 0:
+            raise ValueError("action_norm_num_batches must be > 0 when normalize_action_targets=True.")
+        with torch.no_grad():
+            it = iter(loader)
+            for _ in range(num_batches):
+                batch = next(it)
+                actions = batch["target_action"].to(device=device, dtype=torch.float64)
+                action_norm_mean += actions.sum(dim=0)
+                action_norm_sumsq += (actions * actions).sum(dim=0)
+                action_norm_count += float(actions.shape[0])
+        if is_multi_gpu:
+            dist.all_reduce(action_norm_mean, op=dist.ReduceOp.SUM)
+            dist.all_reduce(action_norm_sumsq, op=dist.ReduceOp.SUM)
+            dist.all_reduce(action_norm_count, op=dist.ReduceOp.SUM)
+        denom = action_norm_count.clamp_min(1.0)
+        action_norm_mean = action_norm_mean / denom
+        action_var = action_norm_sumsq / denom - action_norm_mean * action_norm_mean
+        min_std = float(getattr(cfg.model, "action_norm_min_std", 1.0e-6))
+        action_norm_std = torch.sqrt(action_var.clamp_min(min_std * min_std))
+        action_norm_mean = action_norm_mean.to(dtype=torch.float32)
+        action_norm_std = action_norm_std.to(dtype=torch.float32)
+    else:
+        action_norm_mean = torch.zeros(action_dim, device=device, dtype=torch.float32)
+        action_norm_std = torch.ones(action_dim, device=device, dtype=torch.float32)
+    print(f"Action normalization mean: {action_norm_mean}")
+    print(f"Action normalization std: {action_norm_std}")
     model = ContextSequencePolicy(
         cfg,
         obs_dim,
@@ -117,6 +153,8 @@ def main() -> None:
     ).to(device)
     if is_multi_gpu:
         model = DistributedDataParallel(model, device_ids=[local_rank])
+    model_module = model.module if isinstance(model, DistributedDataParallel) else model
+    model_module.set_action_normalization(action_norm_mean, action_norm_std)
     optimizer_class = getattr(torch.optim, cfg.optim.optimizer_class)
     optimizer = optimizer_class(
         model.parameters(),

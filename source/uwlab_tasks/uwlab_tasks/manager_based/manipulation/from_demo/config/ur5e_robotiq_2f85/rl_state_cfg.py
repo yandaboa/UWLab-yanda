@@ -1141,7 +1141,8 @@ class DemoContextPriviledgedCfg(DemoContextCfg):
 @configclass
 class DemoEvalContextCfg:
     # episode_paths: str = "episodes/20260217_124614/episodes_000000.pt" # single episode of peg insertion
-    episode_paths: str = "episodes/20260222_155251/episodes_000002_trim_subsetx.pt"
+    # episode_paths: str = "episodes/20260222_155251/episodes_000002_trim_subsetx.pt"
+    episode_paths: str = "episodes/20260222_155251/episodes_000000_trim_subsetx.pt"
     # episode_paths: str = "episodes/20260222_164621/episodes_000000_trim_train90_train.pt"
     # episode_paths: list[str] = [
     #     "episodes/20260128_011438/episodes_000000.pt",
