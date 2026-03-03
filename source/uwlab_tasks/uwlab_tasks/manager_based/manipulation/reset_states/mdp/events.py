@@ -1037,6 +1037,13 @@ class MultiResetManager(ManagerTermBase):
         self.probs = torch.tensor(probabilities, device=env.device) / sum(probabilities)
         self.num_states = torch.tensor(num_states, device=env.device)
         self.num_tasks = len(self.datasets)
+        self.iterate_through_resets = bool(cfg.params.get("iterate_through_resets", False))
+
+        # Iterative reset bookkeeping: per-dataset permutation and cursor.
+        # When a dataset cursor exceeds available states, we fall back to random sampling.
+        self._state_permutations = [torch.randperm(n, device=env.device) for n in num_states]
+        self._next_state_index = torch.zeros(self.num_tasks, dtype=torch.long, device=env.device)
+        self._iter_exhausted = torch.zeros(self.num_tasks, dtype=torch.bool, device=env.device)
 
         # Initialize success monitor
         if cfg.params.get("success") is not None:
@@ -1058,9 +1065,12 @@ class MultiResetManager(ManagerTermBase):
         base_paths: list[str],
         probs: list[float],
         success: str | None = None,
+        iterate_through_resets: bool = False,
     ) -> None:
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self._env.device)
+
+        iterate_mode = self.iterate_through_resets or iterate_through_resets
 
         # Log current data
         if success is not None:
@@ -1089,9 +1099,32 @@ class MultiResetManager(ManagerTermBase):
                 continue
 
             current_env_ids = env_ids[mask]
-            state_indices = torch.randint(
-                0, self.num_states[dataset_idx], (len(current_env_ids),), device=self._env.device
-            )
+            if iterate_mode and not self._iter_exhausted[dataset_idx]:
+                next_idx = int(self._next_state_index[dataset_idx].item())
+                num_needed = len(current_env_ids)
+                end_idx = next_idx + num_needed
+                num_states_for_dataset = int(self.num_states[dataset_idx].item())
+
+                if end_idx <= num_states_for_dataset:
+                    contiguous_indices = torch.arange(next_idx, end_idx, device=self._env.device, dtype=torch.long)
+                    # Apply permutation so we iterate unique states in random order.
+                    state_indices = self._state_permutations[dataset_idx][contiguous_indices]
+                    self._next_state_index[dataset_idx] = end_idx
+                else:
+                    print(
+                        f"[MultiResetManager] iterate_through_resets exhausted for dataset {dataset_idx} "
+                        f"(requested up to index {end_idx - 1}, max {num_states_for_dataset - 1}). "
+                        "Falling back to random state sampling for this dataset."
+                    )
+                    self._iter_exhausted[dataset_idx] = True
+                    state_indices = torch.randint(
+                        0, num_states_for_dataset, (num_needed,), device=self._env.device
+                    )
+            else:
+                num_states_for_dataset = int(self.num_states[dataset_idx].item())
+                state_indices = torch.randint(
+                    0, num_states_for_dataset, (len(current_env_ids),), device=self._env.device
+                )
             self.last_state_indices[current_env_ids] = state_indices
             states_to_reset_from = sample_from_nested_dict(self.datasets[dataset_idx], state_indices)
             self._env.scene.reset_to(states_to_reset_from["initial_state"], env_ids=current_env_ids, is_relative=True)

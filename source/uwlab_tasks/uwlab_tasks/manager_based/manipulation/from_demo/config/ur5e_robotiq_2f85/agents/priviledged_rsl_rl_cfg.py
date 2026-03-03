@@ -20,7 +20,7 @@ def my_experts_observation_func(env):
 
 @configclass
 class PPOWithPriviledgedRunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 16
+    num_steps_per_env = 32
     max_iterations = 10000
     save_interval = 100
     resume = False
@@ -30,8 +30,8 @@ class PPOWithPriviledgedRunnerCfg(RslRlOnPolicyRunnerCfg):
         init_noise_std=1.0,
         actor_obs_normalization=True,
         critic_obs_normalization=True,
-        actor_hidden_dims=[512, 256, 128, 64],
-        critic_hidden_dims=[512, 256, 128, 64],
+        actor_hidden_dims=[512, 512, 256, 128, 64],
+        critic_hidden_dims=[512, 512, 256, 128, 64],
         activation="elu",
         noise_std_type="gsde",
         state_dependent_std=False

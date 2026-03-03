@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence, cast
-import inspect
+"""MDP helpers for demo-tracking context, rewards, and observations."""
+
+from typing import Any, Sequence, cast
 
 import torch
 
-from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedEnv
-from isaaclab.managers import ObservationTermCfg
 import isaaclab.utils.math as math_utils
 from isaaclab.assets import Articulation
+from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
 from isaaclab.managers import SceneEntityCfg
 
 from uwlab_tasks.manager_based.manipulation.reset_states import mdp as reset_states_mdp
@@ -19,6 +19,7 @@ __all__ = [
     "get_demo_obs",
     "get_demo_actions",
     "get_demo_lengths",
+    "get_demo_success",
     "get_supervision_demo_obs",
     "get_supervision_demo_actions",
     "get_last_demo_rewards",
@@ -39,14 +40,12 @@ def _huber_saturating(x: torch.Tensor, delta: float = 1.0, tolerance: float = 0.
     return torch.where(x <= delta, 0.5 * x * x, delta * (x - 0.5 * delta))
 
 
-"""
-Rewards for tracking the demo trajectory
-"""
 def _quat_angle_from_rel(q_rel_wxyz: torch.Tensor) -> torch.Tensor:
     """q_rel: (...,4) wxyz -> angle in radians (...,)"""
     q_rel = math_utils.normalize(q_rel_wxyz)
     w = torch.clamp(torch.abs(q_rel[..., 0]), 0.0, 1.0)  # abs handles q ~ -q
     return 2.0 * torch.acos(w)
+
 
 def pose_quat_tracking_reward(
     env: ManagerBasedRLEnv,
@@ -154,6 +153,7 @@ def tracking_end_effector_orientation_error(
     angle = 2.0 * torch.acos(quat_dot)
     return angle
 
+
 def tracking_action_reward(env: "ManagerBasedRLEnv"):
     context_term = _get_tracking_context(env)
     demo_actions = context_term.demo_actions
@@ -162,11 +162,11 @@ def tracking_action_reward(env: "ManagerBasedRLEnv"):
             demo_actions = demo_actions["demo"]
         else:
             raise ValueError("demo actions not found in dict keys of context_term.demo_actions")
-    
+
     last_action = env.action_manager.prev_action
     demo_lengths = context_term.demo_obs_lengths  # [num_envs]
     end_idx = (demo_lengths - 1).clamp(min=0)
-    # this function is called after the timestep is incremented, so to compare a_t with demo_a_t, we have to subtract one    
+    # this function is called after the timestep is incremented, so to compare a_t with demo_a_t, we have to subtract one
     t = torch.minimum(env.episode_length_buf.long() - 1, end_idx)
     env_ids = torch.arange(env.num_envs, device=demo_actions.device)
 
@@ -216,6 +216,7 @@ def demo_dense_success_reward(env: "ManagerBasedRLEnv", std: float = 1.0) -> tor
     reward = reset_states_mdp.dense_success_reward(env, std)
     return torch.where(demo_success, reward, torch.zeros_like(reward))
 
+
 def _get_tracking_context(env: ManagerBasedEnv) -> Any:
     context = getattr(env, "context", None)
     if context is None:
@@ -228,7 +229,6 @@ def resample_episode(env: ManagerBasedRLEnv, env_ids: torch.Tensor | None = None
     context_term.reset(env_ids)
 
 
-
 def _concat_demo_obs_keys(
     demo_obs_dict: dict[str, torch.Tensor], observation_keys: Sequence[str]
 ) -> torch.Tensor:
@@ -237,7 +237,6 @@ def _concat_demo_obs_keys(
         raise KeyError(f"Requested demo obs keys not found: {missing}")
     sequences = [demo_obs_dict[key].flatten(start_dim=2) for key in observation_keys]
     return torch.cat(sequences, dim=-1)
-
 
 
 def get_demo_obs(
@@ -272,6 +271,14 @@ def get_demo_rewards(env: ManagerBasedEnv) -> torch.Tensor:
 def get_demo_lengths(env: ManagerBasedEnv) -> torch.Tensor:
     context_term = _get_tracking_context(env)
     return context_term.demo_obs_lengths.unsqueeze(-1)
+
+
+def get_demo_success(env: ManagerBasedEnv) -> torch.Tensor:
+    """Return whether the assigned demo episode ended in success (0/1)."""
+    context_term = _get_tracking_context(env)
+    demo_success = getattr(context_term, "demo_success", None)
+    assert demo_success is not None, "Demo context is missing demo_success."
+    return demo_success.to(dtype=torch.float32).unsqueeze(-1)
 
 
 def get_supervision_demo_obs(

@@ -300,13 +300,14 @@ class BaseFromDemoEventCfg(BaseEventCfg):
         mode="reset",
         params={
             "base_paths": [
-                f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEAnywhere",
-                # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectRestingEEGrasped",
-                # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEGrasped",
+                f"reset_state_datasets_large/ObjectAnywhereEEAnywhere",
+                f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectRestingEEGrasped",
+                f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEGrasped",
                 # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectPartiallyAssembledEEGrasped",
             ],
-            "probs": [1.0],
+            # "probs": [1.0],
             # "probs": [0.25, 0.25, 0.25, 0.25],
+            "probs": [0.4, 0.3, 0.3],
             "success": "env.reward_manager.get_term_cfg('progress_context').func.success",
         },
     )
@@ -336,16 +337,17 @@ class FromDemoTrainEventCfg(BaseFromDemoEventCfg):
 class FromDemoPriviledgedTrainEventCfg(FromDemoTrainEventCfg):
     """Training events with from-demo context."""
 
+    pass
     # randomly sample pushes to the robot end effector
-    random_pushes = EventTerm(
-        func=mdp_events.push_by_setting_velocity,
-        mode="interval",
-        interval_range_s=(1.0, 2.0),
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
-            "velocity_range": {"x": (-0.2, 0.2), "y": (-0.2, 0.2)},
-        },
-    )
+    # random_pushes = EventTerm(
+    #     func=mdp_events.push_by_setting_velocity,
+    #     mode="interval",
+    #     interval_range_s=(1.0, 2.0),
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+    #         "velocity_range": {"x": (-0.05, 0.05), "y": (-0.05, 0.05)},
+    #     },
+    # )
 
 @configclass
 class FromDemoEvalEventCfg(BaseFromDemoEventCfg):
@@ -366,14 +368,17 @@ class EvalEventCfg(BaseEventCfg):
         mode="reset",
         params={
             "base_paths": [
-                f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEAnywhere",
-                # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectRestingEEGrasped",
-                # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEGrasped",
+                "reset_state_datasets_large/ObjectAnywhereEEAnywhere",
+                # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEAnywhere",
+                f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectRestingEEGrasped",
+                f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEGrasped",
                 # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectPartiallyAssembledEEGrasped",
             ],
-            "probs": [1.0],
+            # "probs": [1.0],
+            "probs": [0.4, 0.3, 0.3],
             # "probs": [0.25, 0.25, 0.25, 0.25],
             "success": "env.reward_manager.get_term_cfg('progress_context').func.success",
+            "iterate_through_resets": True,
         },
     )
 
@@ -411,7 +416,16 @@ class GoalCommandsCfg:
 class TrackingCommandsCfg:
     """Command specifications for the tracking metrics command term."""
 
-    tracking_metrics_command = DemoTrackingMetricsCommandCfg()
+    tracking_command = DemoTrackingMetricsCommandCfg()
+
+    task_command = omni_reset_mdp.TaskCommandCfg(
+        asset_cfg=SceneEntityCfg("robot", body_names="body"),
+        resampling_time_range=(1e6, 1e6),
+        success_position_threshold=0.005,
+        success_orientation_threshold=0.025,
+        insertive_asset_cfg=SceneEntityCfg("insertive_object"),
+        receptive_asset_cfg=SceneEntityCfg("receptive_object"),
+    )
 
 @configclass
 class CriticCfg(ObsGroup):
@@ -449,7 +463,7 @@ class CriticCfg(ObsGroup):
             "target_asset_cfg": SceneEntityCfg("receptive_object"),
             "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
             "rotation_repr": "axis_angle",
-            "ood_offset": 1.0,
+            # "ood_offset": 1.0,
             "object_type": "receptive",
         },
     )
@@ -460,7 +474,7 @@ class CriticCfg(ObsGroup):
             "target_asset_cfg": SceneEntityCfg("insertive_object"),
             "root_asset_cfg": SceneEntityCfg("receptive_object"),
             "rotation_repr": "axis_angle",
-            "ood_offset": 1.0,
+            # "ood_offset": 1.0,
             "object_type": "insertive",
         },
     )
@@ -887,16 +901,56 @@ class PrivilegedPolicyCfg(ObsGroup):
         },
     )
 
+    insertive_asset_pose = ObsTerm(
+        func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
+        params={
+            "target_asset_cfg": SceneEntityCfg("insertive_object"),
+            "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+            "root_asset_offset_metadata_key": "gripper_offset",
+            "rotation_repr": "axis_angle",
+        },
+    )
+
+    receptive_asset_pose = ObsTerm(
+        func=omni_reset_mdp.target_asset_pose_in_root_asset_frame,
+        params={
+            "target_asset_cfg": SceneEntityCfg("receptive_object"),
+            "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+            "rotation_repr": "axis_angle",
+        },
+    )
+
+    insertive_asset_in_receptive_asset_frame = ObsTerm(
+        func=omni_reset_mdp.target_asset_pose_in_root_asset_frame,
+        params={
+            "target_asset_cfg": SceneEntityCfg("insertive_object"),
+            "root_asset_cfg": SceneEntityCfg("receptive_object"),
+            "rotation_repr": "axis_angle",
+        },
+    )
+
     context_obs = ObsTerm(
         func=from_demo_mdp.get_supervision_demo_obs,
-        params={"observation_keys":["end_effector_pose"]
+        params={"observation_keys":["joint_pos", "end_effector_pose", "insertive_asset_pose", "receptive_asset_pose", "insertive_asset_in_receptive_asset_frame"]
         },
+    )
+
+    context_actions = ObsTerm(
+        func=from_demo_mdp.get_supervision_demo_actions,
+    )
+
+    context_rewards = ObsTerm(
+        func=from_demo_mdp.get_last_demo_rewards,
+    )
+
+    context_success = ObsTerm(
+        func=from_demo_mdp.get_demo_success,
     )
 
     def __post_init__(self):
         self.enable_corruption = False
         self.concatenate_terms = True
-        self.history_length = 1
+        self.history_length = 3
 
 @configclass
 class PriviledgedTrainingObservationsCfg(TrainingObservationsCfg):
@@ -907,7 +961,7 @@ class PriviledgedTrainingObservationsCfg(TrainingObservationsCfg):
         """Observations for tracking critic group."""
         context_obs = ObsTerm(
             func=from_demo_mdp.get_supervision_demo_obs,
-            params={"observation_keys":["end_effector_pose", "demo_link_quats", "joint_pos"]
+            params={"observation_keys":["joint_pos", "end_effector_pose", "insertive_asset_pose", "receptive_asset_pose", "insertive_asset_in_receptive_asset_frame"]
             },
         )
         context_actions = ObsTerm(
@@ -920,9 +974,13 @@ class PriviledgedTrainingObservationsCfg(TrainingObservationsCfg):
                 "root_asset_cfg": SceneEntityCfg("robot"),
             },
         )
-        # context_rewards = ObsTerm(
-        #     func=from_demo_mdp.get_last_demo_rewards,
-        # )
+        context_rewards = ObsTerm(
+            func=from_demo_mdp.get_last_demo_rewards,
+        )
+
+        context_success = ObsTerm(
+            func=from_demo_mdp.get_demo_success,
+        )
     
     critic: PriviledgedTrackingCriticCfg = PriviledgedTrackingCriticCfg()
     policy: PrivilegedPolicyCfg = PrivilegedPolicyCfg()
@@ -1018,15 +1076,15 @@ class FromDemoRewardsCfg:
 
     # safety rewards
 
-    # action_magnitude = RewTerm(func=omni_reset_mdp.action_l2_clamped, weight=-1e-4)
+    action_magnitude = RewTerm(func=omni_reset_mdp.action_l2_clamped, weight=-1e-4)
 
-    # action_rate = RewTerm(func=omni_reset_mdp.action_rate_l2_clamped, weight=-1e-4)
+    action_rate = RewTerm(func=omni_reset_mdp.action_rate_l2_clamped, weight=-1e-4)
 
-    # joint_vel = RewTerm(
-    #     func=omni_reset_mdp.joint_vel_l2_clamped,
-    #     weight=-1e-3,
-    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=["shoulder.*", "elbow.*", "wrist.*"])},
-    # )
+    joint_vel = RewTerm(
+        func=omni_reset_mdp.joint_vel_l2_clamped,
+        weight=-1e-3,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["shoulder.*", "elbow.*", "wrist.*"])},
+    )
 
     abnormal_robot = RewTerm(func=omni_reset_mdp.abnormal_robot_state, weight=-100.0)
 
@@ -1042,7 +1100,7 @@ class FromDemoRewardsCfg:
 
     tracking_end_effector = RewTerm(
         func=from_demo_mdp.tracking_end_effector_reward,
-        weight=10.0,
+        weight=2.0,
         params={
             "k": 1.0,
             "tolerance": 0.1,
@@ -1051,7 +1109,7 @@ class FromDemoRewardsCfg:
 
     tracking_end_effector_orientation = RewTerm(
         func=from_demo_mdp.tracking_end_effector_orientation_reward,
-        weight=10.0,
+        weight=2.0,
         params={
             "k": 5.0,
             "tolerance": 1.0,
@@ -1064,9 +1122,20 @@ class FromDemoRewardsCfg:
     # )
 
     # just for making events work
+    ee_asset_distance = RewTerm(
+        func=omni_reset_mdp.ee_asset_distance_tanh,
+        weight=1.0,
+        params={
+            "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
+            "target_asset_cfg": SceneEntityCfg("insertive_object"),
+            "root_asset_offset_metadata_key": "gripper_offset",
+            "std": 1.0,
+        },
+    )
+
     progress_context = RewTerm(
         func=omni_reset_mdp.ProgressContext,  # type: ignore
-        weight=0.0,
+        weight=1.0,
         params={
             "insertive_asset_cfg": SceneEntityCfg("insertive_object"),
             "receptive_asset_cfg": SceneEntityCfg("receptive_object"),
@@ -1075,7 +1144,7 @@ class FromDemoRewardsCfg:
 
     demo_success = RewTerm(
         func=from_demo_mdp.demo_success_reward,
-        weight=10.0,
+        weight=100.0,
     )
 
     demo_dense_success = RewTerm(
@@ -1089,13 +1158,14 @@ class FromDemoRewardsCfg:
 
 @configclass
 class PriviledgedFromDemoRewardsCfg(FromDemoRewardsCfg):
-    tracking_joint_angle = RewTerm(
-        func=from_demo_mdp.pose_quat_tracking_reward,
-        weight=100.0,
-        params={
-            "k": 2.0,
-        },
-    )
+    pass
+    # tracking_joint_angle = RewTerm(
+    #     func=from_demo_mdp.pose_quat_tracking_reward,
+    #     weight=100.0,
+    #     params={
+    #         "k": 2.0,
+    #     },
+    # )
 
 @configclass
 class DemoContextCfg:
@@ -1125,16 +1195,15 @@ class DemoContextPriviledgedCfg(DemoContextCfg):
     """Context for privileged training."""
     # episode_paths: str = "episodes/20260208_011257/episodes_000000.pt"
     episode_paths: list[str] = [
-        "episodes/20260208_011257/episodes_000000.pt",
-        "episodes/20260208_011257/episodes_000001.pt",
-        "episodes/20260208_011257/episodes_000002.pt",
-        "episodes/20260208_011257/episodes_000003.pt",
-        "episodes/20260208_011257/episodes_000004.pt",
-        "episodes/20260208_011257/episodes_000005.pt",
-        "episodes/20260208_011257/episodes_000006.pt",
-        "episodes/20260208_011257/episodes_000007.pt",
-        "episodes/20260208_011257/episodes_000008.pt",
-        "episodes/20260208_011257/episodes_000009.pt",
+        "episodes/20260302_165916/episodes_000000_trim.pt",
+        "episodes/20260302_165916/episodes_000001_trim.pt",
+        "episodes/20260302_165916/episodes_000002_trim.pt",
+        "episodes/20260302_165916/episodes_000003_trim.pt",
+        "episodes/20260302_165916/episodes_000004_trim.pt",
+        "episodes/20260302_165916/episodes_000005_trim.pt",
+        "episodes/20260302_165916/episodes_000006_trim.pt",
+        "episodes/20260302_165916/episodes_000007_trim.pt",
+        "episodes/20260302_165916/episodes_000008_trim.pt",
     ]
     use_raw_states=False
 
@@ -1165,12 +1234,19 @@ class FromDemoCollectTerminationsCfg:
 
     abnormal_robot = DoneTerm(func=omni_reset_mdp.abnormal_robot_state)
 
-    success = DoneTerm(func=omni_reset_mdp.terminate_on_success, params={"delay_steps": 0})
+    success = DoneTerm(func=omni_reset_mdp.terminate_on_success, params={"delay_steps": 5})
 
 @configclass
 class FromDemoTrainTerminationsCfg:
     abnormal_robot = DoneTerm(func=omni_reset_mdp.abnormal_robot_state)
     end_of_demo = DoneTerm(func=from_demo_mdp.end_of_demo)
+    # time_out = DoneTerm(func=omni_reset_mdp.time_out, time_out=True)
+
+@configclass
+class FromDemoPriviledgedTrainTerminationsCfg:
+    abnormal_robot = DoneTerm(func=omni_reset_mdp.abnormal_robot_state)
+    # end_of_demo = DoneTerm(func=from_demo_mdp.end_of_demo)
+    time_out = DoneTerm(func=omni_reset_mdp.time_out, time_out=True)
 
 @configclass
 class EpisodeTimeoutTerminationsCfg:
@@ -1302,8 +1378,10 @@ class Ur5eRobotiq2f85RelJointPosDemoCollectCfg(Ur5eRobotiq2f85RlStateCfg):
             mode="reset",
             params={
                 "action_name": "arm",
-                "stiffness_distribution_params": (0.7, 1.3),
-                "damping_distribution_params": (0.9, 1.1),
+                # "stiffness_distribution_params": (0.7, 1.3),
+                "stiffness_distribution_params": (1.0, 1.0),
+                # "damping_distribution_params": (0.9, 1.1),
+                "damping_distribution_params": (1.0, 1.0),
                 "operation": "scale",
                 "distribution": "uniform",
             },
@@ -1354,11 +1432,25 @@ class Ur5eRobotiq2f85RelJointPosFromDemoPriviledgedTrainCfg(Ur5eRobotiq2f85RlSta
     observations: PriviledgedTrainingObservationsCfg = PriviledgedTrainingObservationsCfg()
     context: DemoContextPriviledgedCfg = DemoContextPriviledgedCfg()
     commands: TrackingCommandsCfg = TrackingCommandsCfg()
-    terminations: FromDemoTrainTerminationsCfg = FromDemoTrainTerminationsCfg()
+    terminations: FromDemoPriviledgedTrainTerminationsCfg = FromDemoPriviledgedTrainTerminationsCfg()
 
     def __post_init__(self):
         super().__post_init__()
         self.scene.robot = EXPLICIT_UR5E_ROBOTIQ_2F85.replace(prim_path="{ENV_REGEX_NS}/Robot")
+
+        self.events.randomize_robot_actuator_parameters = EventTerm(
+            func=omni_reset_mdp.randomize_operational_space_controller_gains,
+            mode="reset",
+            params={
+                "action_name": "arm",
+                # "stiffness_distribution_params": (0.7, 1.3),
+                "stiffness_distribution_params": (1.0, 1.0),
+                # "damping_distribution_params": (0.9, 1.1),
+                "damping_distribution_params": (1.0, 1.0),
+                "operation": "scale",
+                "distribution": "uniform",
+            },
+        )
 
 
 @configclass
@@ -1377,14 +1469,16 @@ class Ur5eRobotiq2f85RelJointPosFromDemoEvalCfg(Ur5eRobotiq2f85RlStateCfg):
         super().__post_init__()
         self.scene.robot = EXPLICIT_UR5E_ROBOTIQ_2F85.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
-        # self.events.randomize_robot_actuator_parameters = EventTerm(
-        #     func=omni_reset_mdp.randomize_operational_space_controller_gains,
-        #     mode="reset",
-        #     params={
-        #         "action_name": "arm",
-        #         "stiffness_distribution_params": (0.7, 1.3),
-        #         "damping_distribution_params": (0.9, 1.1),
-        #         "operation": "scale",
-        #         "distribution": "uniform",
-        #     },
-        # )
+        self.events.randomize_robot_actuator_parameters = EventTerm(
+            func=omni_reset_mdp.randomize_operational_space_controller_gains,
+            mode="reset",
+            params={
+                "action_name": "arm",
+                # "stiffness_distribution_params": (0.7, 1.3),
+                "stiffness_distribution_params": (1.0, 1.0),
+                # "damping_distribution_params": (0.9, 1.1),
+                "damping_distribution_params": (1.0, 1.0),
+                "operation": "scale",
+                "distribution": "uniform",
+            },
+        )

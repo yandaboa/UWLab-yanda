@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Literal, Mapping
 
 import torch
 import torch.distributed as dist
@@ -218,10 +218,18 @@ class ContextEpisodeDataset(Dataset[dict[str, torch.Tensor]]):
 class ContextStepDataset(Dataset[dict[str, torch.Tensor]]):
     """Dataset that yields per-step samples with full episode context."""
 
-    def __init__(self, episode_paths: Iterable[str], obs_keys: list[str] | None) -> None:
+    def __init__(
+        self,
+        episode_paths: Iterable[str],
+        obs_keys: list[str] | None,
+        include_data_augs: bool = False,
+    ) -> None:
         self.obs_keys = obs_keys
+        self.include_data_augs = bool(include_data_augs)
         self.episodes: list[dict[str, Any]] = []
-        self.step_index: list[tuple[int, int]] = []
+        self.step_index: list[tuple[int, Literal["real", "aug"], int]] = []
+        self.real_sample_count = 0
+        self.aug_sample_count = 0
         for path in episode_paths:
             data = torch.load(path, map_location="cpu")
             print("Loaded episode data from ", path)
@@ -230,13 +238,28 @@ class ContextStepDataset(Dataset[dict[str, torch.Tensor]]):
         for ep_idx, episode in enumerate(self.episodes):
             actions = episode["actions"]
             length = int(episode.get("length", actions.shape[0]))
-            self.step_index.extend([(ep_idx, t) for t in range(length)])
+            self.step_index.extend([(ep_idx, "real", t) for t in range(length)])
+            self.real_sample_count += length
+            if self.include_data_augs:
+                ccil_flat = episode.get("ccil_synthetic_flat")
+                if isinstance(ccil_flat, Mapping):
+                    aug_state = ccil_flat.get("state")
+                    aug_action = ccil_flat.get("action")
+                    aug_next = ccil_flat.get("next_state")
+                    assert isinstance(aug_state, torch.Tensor)
+                    assert isinstance(aug_action, torch.Tensor)
+                    assert isinstance(aug_next, torch.Tensor)
+                    aug_len = int(aug_state.shape[0])
+                    assert int(aug_action.shape[0]) == aug_len
+                    assert int(aug_next.shape[0]) == aug_len
+                    self.step_index.extend([(ep_idx, "aug", t) for t in range(aug_len)])
+                    self.aug_sample_count += aug_len
 
     def __len__(self) -> int:
         return len(self.step_index)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        ep_idx, t = self.step_index[idx]
+        ep_idx, sample_kind, t = self.step_index[idx]
         episode = self.episodes[ep_idx]
         obs = episode["obs"]
         actions = episode["actions"]
@@ -253,8 +276,8 @@ class ContextStepDataset(Dataset[dict[str, torch.Tensor]]):
             "actions": actions,
             "rewards": rewards,
             "length": torch.tensor(length, dtype=torch.long),
-            "current_obs": obs_seq[t],
-            "target_action": actions[t],
+            "current_obs": obs_seq[t] if sample_kind == "real" else episode["ccil_synthetic_flat"]["state"][t],
+            "target_action": actions[t] if sample_kind == "real" else episode["ccil_synthetic_flat"]["action"][t],
         }
 
 

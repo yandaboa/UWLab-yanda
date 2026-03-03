@@ -20,21 +20,22 @@ class SupervisedContextDataCfg:
 
     train_episode_paths: list[str] | None = field(
         default_factory=lambda: [
-            "episodes/20260222_155251/episodes_000002_trim.pt",
-            "episodes/20260222_155251/episodes_000003_trim.pt",
-            "episodes/20260222_155251/episodes_000004_trim.pt",
-            "episodes/20260222_155251/episodes_000005_trim.pt",
-            "episodes/20260222_155251/episodes_000006_trim.pt",
-            "episodes/20260222_155251/episodes_000007_trim.pt",
-            "episodes/20260222_155251/episodes_000008_trim.pt",
-            "episodes/20260222_155251/episodes_000009_trim.pt",
+            "episodes/20260224_145844/episodes_000000_trim.pt",
+            "episodes/20260224_145844/episodes_000001_trim.pt",
+            "episodes/20260224_145844/episodes_000002_trim.pt",
+            "episodes/20260224_145844/episodes_000003_trim.pt",
+            "episodes/20260224_145844/episodes_000004_trim.pt",
+            "episodes/20260224_145844/episodes_000005_trim.pt",
+            "episodes/20260224_145844/episodes_000006_trim.pt",
+            "episodes/20260224_145844/episodes_000007_trim.pt",
+            "episodes/20260224_145844/episodes_000008_trim.pt",
         ]
     )
     """List of episode .pt files or glob patterns for training."""
 
     validation_episode_paths: list[str] | None = field(
         default_factory=lambda: [
-            "episodes/20260222_155251/episodes_000000_trim.pt",
+            "episodes/20260302_153804/episodes_000009_trim.pt",
         ]
     )
     """Optional list of episode .pt files or glob patterns for validation."""
@@ -69,6 +70,9 @@ class SupervisedContextDataCfg:
 
     shuffle: bool = True
     """Shuffle episodes in the dataset."""
+
+    train_on_data_augs: bool = False
+    """If True, include CCIL augmentation triplets as additional training samples."""
 
 
 @dataclass
@@ -115,7 +119,7 @@ class SupervisedContextModelCfg:
 
     embedding_dim: int = 256
     hidden_dim: int = 512
-    num_layers: int = 4
+    num_layers: int = 6
     num_heads: int = 4
     embedding_dropout: float = 0.0
     attention_dropout: float = 0.0
