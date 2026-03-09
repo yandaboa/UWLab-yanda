@@ -41,6 +41,8 @@ class DemoTrackingContext:
         if not isinstance(episode_paths, Iterable) or not episode_paths:
             raise ValueError("DemoTrackingContext requires non-empty episode_paths.")
         self.episodes: list[dict[str, Any]] = []
+        self.episode_groups: list[list[int]] = []
+        self.episode_to_group_index: list[int] = []
         self.episode_success: list[bool] = []
         action_discretization_spec: dict[str, Any] | None = None
         for path in episode_paths:
@@ -48,19 +50,49 @@ class DemoTrackingContext:
             if action_discretization_spec is None:
                 action_discretization_spec = _load_action_discretization_spec(Path(local_path).parent)
             data = torch.load(local_path, map_location="cpu")
-            if not isinstance(data, dict) or "episodes" not in data:
+            if not isinstance(data, dict):
                 raise ValueError(f"Expected EpisodeStorage format in {local_path}.")
-            episodes = data["episodes"]
-            if not episodes:
-                raise ValueError(f"No episodes found in {local_path}.")
-            for episode in episodes:
-                cleaned = _strip_debug_obs(episode)
-                if "states" not in cleaned or "physics" not in cleaned:
-                    raise ValueError(f"Episode in {local_path} is missing states or physics.")
-                self.episodes.append(cleaned)
-                self.episode_success.append(_extract_episode_success(cleaned))
+            if "episodes" in data:
+                episodes = data["episodes"]
+                if not episodes:
+                    raise ValueError(f"No episodes found in {local_path}.")
+                for episode in episodes:
+                    cleaned = _strip_debug_obs(episode)
+                    if "states" not in cleaned or "physics" not in cleaned:
+                        raise ValueError(f"Episode in {local_path} is missing states or physics.")
+                    episode_index = len(self.episodes)
+                    group_index = len(self.episode_groups)
+                    self.episodes.append(cleaned)
+                    self.episode_success.append(_extract_episode_success(cleaned))
+                    self.episode_groups.append([episode_index])
+                    self.episode_to_group_index.append(group_index)
+            elif "episode_groups" in data:
+                raw_episode_groups = data["episode_groups"]
+                if not raw_episode_groups:
+                    raise ValueError(f"No episode groups found in {local_path}.")
+                for raw_group in raw_episode_groups:
+                    if not isinstance(raw_group, list) or len(raw_group) == 0:
+                        raise ValueError(f"Expected non-empty episode group in {local_path}.")
+                    _assert_group_multi_reset_alignment(raw_group, local_path)
+                    group_index = len(self.episode_groups)
+                    group_episode_indices: list[int] = []
+                    for episode in raw_group:
+                        cleaned = _strip_debug_obs(episode)
+                        if "states" not in cleaned or "physics" not in cleaned:
+                            raise ValueError(f"Episode in {local_path} is missing states or physics.")
+                        episode_index = len(self.episodes)
+                        self.episodes.append(cleaned)
+                        self.episode_success.append(_extract_episode_success(cleaned))
+                        self.episode_to_group_index.append(group_index)
+                        group_episode_indices.append(episode_index)
+                    self.episode_groups.append(group_episode_indices)
+            else:
+                raise ValueError(f"Expected episodes or episode_groups in {local_path}.")
         if not self.episodes:
             raise ValueError("DemoTrackingContext found no episodes to load.")
+        assert len(self.episode_to_group_index) == len(self.episodes), (
+            "episode_to_group_index must align with loaded episodes."
+        )
         self.action_discretization_spec = action_discretization_spec
         self.episode_indices = torch.full((resolved_num_envs,), -1, device=resolved_device, dtype=torch.long)
         device = torch.device(resolved_device)
@@ -100,9 +132,7 @@ class DemoTrackingContext:
             env_ids = torch.arange(self._env.num_envs, device=self._env.device)
         if env_ids.numel() == 0:
             return
-        episode_indices = torch.randint(
-            0, len(self.episodes), (env_ids.numel(),), device=self._env.device
-        )
+        episode_indices = torch.randint(0, len(self.episodes), (len(env_ids),), device=self._env.device)
         self.episode_indices[env_ids] = episode_indices
         selected = [self.episodes[idx] for idx in episode_indices.tolist()]
         selected_success = torch.tensor(
@@ -252,6 +282,40 @@ def _extract_episode_success(episode: dict[str, Any]) -> bool:
     if isinstance(success, (bool, int)):
         return bool(success)
     return False
+
+
+def _to_int_scalar(value: Any, field_name: str) -> int:
+    if isinstance(value, torch.Tensor):
+        assert value.numel() == 1, f"Expected scalar tensor for {field_name}."
+        return int(value.item())
+    if isinstance(value, (int, bool)):
+        return int(value)
+    raise AssertionError(f"Expected scalar value for {field_name}, got: {type(value)}")
+
+
+def _extract_multi_reset_identifiers(episode: dict[str, Any]) -> tuple[int, int]:
+    states = episode.get("states")
+    assert isinstance(states, dict), "Grouped episode states must be a dict."
+    assert "multi_reset_task_id" in states, "Grouped episodes require multi_reset_task_id in states."
+    assert "multi_reset_state_index" in states, "Grouped episodes require multi_reset_state_index in states."
+    task_id = _to_int_scalar(states["multi_reset_task_id"], "multi_reset_task_id")
+    state_index = _to_int_scalar(states["multi_reset_state_index"], "multi_reset_state_index")
+    return task_id, state_index
+
+
+def _assert_group_multi_reset_alignment(group: list[dict[str, Any]], source_path: str) -> None:
+    assert len(group) > 0, f"Expected non-empty episode group in {source_path}."
+    ref_task_id, ref_state_index = _extract_multi_reset_identifiers(group[0])
+    for idx, episode in enumerate(group[1:], start=1):
+        task_id, state_index = _extract_multi_reset_identifiers(episode)
+        assert task_id == ref_task_id, (
+            f"Inconsistent multi_reset_task_id within group from {source_path}: "
+            f"episode[0]={ref_task_id}, episode[{idx}]={task_id}"
+        )
+        assert state_index == ref_state_index, (
+            f"Inconsistent multi_reset_state_index within group from {source_path}: "
+            f"episode[0]={ref_state_index}, episode[{idx}]={state_index}"
+        )
 
 
 def _is_multi_reset_state(states: Any) -> bool:

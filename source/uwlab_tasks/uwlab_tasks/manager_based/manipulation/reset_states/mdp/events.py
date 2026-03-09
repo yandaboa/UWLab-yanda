@@ -1054,6 +1054,7 @@ class MultiResetManager(ManagerTermBase):
 
         self.task_id = torch.randint(0, self.num_tasks, (self.num_envs,), device=self.device)
         self.last_state_indices = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
+        self._has_cached_state = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
 
         # expose on env so other components can reuse the reset indices
         setattr(self._env, "multi_reset_manager", self)
@@ -1088,9 +1089,44 @@ class MultiResetManager(ManagerTermBase):
                     f"Metrics/task_{task_idx}_normalized_prob": self.probs[task_idx].item(),
                 })
 
-        # Sample which dataset to use for each environment
-        dataset_indices = torch.multinomial(self.probs, len(env_ids), replacement=True)
+        raw_num_similar_trajectories = getattr(self._env, "num_similar_trajectories", None)
+        num_collected_episodes = getattr(self._env, "num_collected_episodes", None)
+        if (
+            isinstance(raw_num_similar_trajectories, int)
+            and raw_num_similar_trajectories > 1
+            and isinstance(num_collected_episodes, torch.Tensor)
+        ):
+            should_resample = ~self._has_cached_state[env_ids]
+            should_resample |= (
+                num_collected_episodes[env_ids].to(dtype=torch.long)
+                == (raw_num_similar_trajectories - 1)
+            )
+        else:
+            should_resample = torch.ones((len(env_ids),), dtype=torch.bool, device=self._env.device)
+
+        dataset_indices = self.task_id[env_ids].clone()
+        if torch.any(should_resample):
+            sampled_dataset_indices = torch.multinomial(self.probs, int(should_resample.sum().item()), replacement=True)
+            dataset_indices[should_resample] = sampled_dataset_indices
         self.task_id[env_ids] = dataset_indices
+
+        def _sample_state_indices(dataset_idx: int, count: int) -> torch.Tensor:
+            num_states_for_dataset = int(self.num_states[dataset_idx].item())
+            if iterate_mode and not self._iter_exhausted[dataset_idx]:
+                next_idx = int(self._next_state_index[dataset_idx].item())
+                end_idx = next_idx + count
+                if end_idx <= num_states_for_dataset:
+                    contiguous_indices = torch.arange(next_idx, end_idx, device=self._env.device, dtype=torch.long)
+                    sampled_indices = self._state_permutations[dataset_idx][contiguous_indices]
+                    self._next_state_index[dataset_idx] = end_idx
+                    return sampled_indices
+                print(
+                    f"[MultiResetManager] iterate_through_resets exhausted for dataset {dataset_idx} "
+                    f"(requested up to index {end_idx - 1}, max {num_states_for_dataset - 1}). "
+                    "Falling back to random state sampling for this dataset."
+                )
+                self._iter_exhausted[dataset_idx] = True
+            return torch.randint(0, num_states_for_dataset, (count,), device=self._env.device)
 
         # Process each dataset's environments
         for dataset_idx in range(self.num_tasks):
@@ -1099,34 +1135,14 @@ class MultiResetManager(ManagerTermBase):
                 continue
 
             current_env_ids = env_ids[mask]
-            if iterate_mode and not self._iter_exhausted[dataset_idx]:
-                next_idx = int(self._next_state_index[dataset_idx].item())
-                num_needed = len(current_env_ids)
-                end_idx = next_idx + num_needed
-                num_states_for_dataset = int(self.num_states[dataset_idx].item())
-
-                if end_idx <= num_states_for_dataset:
-                    contiguous_indices = torch.arange(next_idx, end_idx, device=self._env.device, dtype=torch.long)
-                    # Apply permutation so we iterate unique states in random order.
-                    state_indices = self._state_permutations[dataset_idx][contiguous_indices]
-                    self._next_state_index[dataset_idx] = end_idx
-                else:
-                    print(
-                        f"[MultiResetManager] iterate_through_resets exhausted for dataset {dataset_idx} "
-                        f"(requested up to index {end_idx - 1}, max {num_states_for_dataset - 1}). "
-                        "Falling back to random state sampling for this dataset."
-                    )
-                    self._iter_exhausted[dataset_idx] = True
-                    state_indices = torch.randint(
-                        0, num_states_for_dataset, (num_needed,), device=self._env.device
-                    )
-            else:
-                num_states_for_dataset = int(self.num_states[dataset_idx].item())
-                state_indices = torch.randint(
-                    0, num_states_for_dataset, (len(current_env_ids),), device=self._env.device
-                )
-            self.last_state_indices[current_env_ids] = state_indices
-            states_to_reset_from = sample_from_nested_dict(self.datasets[dataset_idx], state_indices)
+            current_state_indices = self.last_state_indices[current_env_ids].clone()
+            current_should_resample = should_resample[mask]
+            if torch.any(current_should_resample):
+                sampled_state_indices = _sample_state_indices(dataset_idx, int(current_should_resample.sum().item()))
+                current_state_indices[current_should_resample] = sampled_state_indices
+            self.last_state_indices[current_env_ids] = current_state_indices
+            self._has_cached_state[current_env_ids] = True
+            states_to_reset_from = sample_from_nested_dict(self.datasets[dataset_idx], current_state_indices)
             self._env.scene.reset_to(states_to_reset_from["initial_state"], env_ids=current_env_ids, is_relative=True)
 
         # Reset velocities

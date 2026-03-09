@@ -11,15 +11,28 @@ from typing import Any
 import torch
 
 # Name of the command term that provides demo tracking metrics (joint_tracking_error, ee_tracking_error)
-TRACKING_METRICS_COMMAND_NAME = "tracking_metrics_command"
+TRACKING_METRICS_COMMAND_NAMES = ("tracking_command", "tracking_metrics_command")
+TASK_METRICS_COMMAND_NAME = "task_command"
 
 
 def get_tracking_metrics_term(manager_env: Any) -> Any:
     """Return the DemoTrackingMetricsCommand term if present, else None."""
     if not hasattr(manager_env, "command_manager"):
         return None
+    for term_name in TRACKING_METRICS_COMMAND_NAMES:
+        try:
+            return manager_env.command_manager.get_term(term_name)
+        except Exception:
+            continue
+    return None
+
+
+def get_task_metrics_term(manager_env: Any) -> Any:
+    """Return the task command term if present, else None."""
+    if not hasattr(manager_env, "command_manager"):
+        return None
     try:
-        return manager_env.command_manager.get_term(TRACKING_METRICS_COMMAND_NAME)
+        return manager_env.command_manager.get_term(TASK_METRICS_COMMAND_NAME)
     except Exception:
         return None
 
@@ -47,21 +60,43 @@ class EvalWandbLogger:
     def __init__(self, wandb_run: Any) -> None:
         self._run = wandb_run
 
-    def log_step(self, tracking_term: Any, total_env_steps: int) -> None:
-        """Log tracking error at the current step (mean over envs). Call after env.step()."""
+    def log_step(self, tracking_term: Any, total_env_steps: int, task_term: Any | None = None) -> None:
+        """Log tracking and task metrics at the current step (mean over envs)."""
         if self._run is None:
             return
-        joint = tracking_term.metrics["joint_tracking_error"].mean().item()
-        ee = tracking_term.metrics["ee_position_tracking_error"].mean().item()
-        ee_rot = tracking_term.metrics["ee_orientation_tracking_error"].mean().item()
-        self._run.log(
-            {
-                "eval/joint_tracking_error": joint,
-                "eval/ee_tracking_error": ee,
-                "eval/ee_orientation_tracking_error": ee_rot,
-            },
-            step=total_env_steps,
-        )
+        payload: dict[str, float] = {}
+        if tracking_term is not None and hasattr(tracking_term, "metrics"):
+            tracking_metrics = tracking_term.metrics
+            if "joint_tracking_error" in tracking_metrics:
+                payload["eval/joint_tracking_error"] = tracking_metrics["joint_tracking_error"].mean().item()
+            if "ee_position_tracking_error" in tracking_metrics:
+                payload["eval/ee_tracking_error"] = tracking_metrics["ee_position_tracking_error"].mean().item()
+            if "ee_orientation_tracking_error" in tracking_metrics:
+                payload["eval/ee_orientation_tracking_error"] = tracking_metrics[
+                    "ee_orientation_tracking_error"
+                ].mean().item()
+            if "demo_success_match_rate" in tracking_metrics:
+                payload["eval/demo_success_match_rate"] = tracking_metrics["demo_success_match_rate"].mean().item()
+        if task_term is not None and hasattr(task_term, "metrics"):
+            task_metrics = task_term.metrics
+            if "average_rot_align_error" in task_metrics:
+                payload["eval/task_average_rot_align_error"] = task_metrics["average_rot_align_error"].mean().item()
+            if "average_pos_align_error" in task_metrics:
+                payload["eval/task_average_pos_align_error"] = task_metrics["average_pos_align_error"].mean().item()
+            if "end_of_episode_rot_align_error" in task_metrics:
+                payload["eval/task_end_of_episode_rot_align_error"] = task_metrics[
+                    "end_of_episode_rot_align_error"
+                ].mean().item()
+            if "end_of_episode_pos_align_error" in task_metrics:
+                payload["eval/task_end_of_episode_pos_align_error"] = task_metrics[
+                    "end_of_episode_pos_align_error"
+                ].mean().item()
+            if "end_of_episode_success_rate" in task_metrics:
+                payload["eval/task_end_of_episode_success_rate"] = task_metrics[
+                    "end_of_episode_success_rate"
+                ].mean().item()
+        if payload:
+            self._run.log(payload, step=total_env_steps)
 
     def log_episode_batch(
         self,

@@ -1211,7 +1211,7 @@ class DemoContextPriviledgedCfg(DemoContextCfg):
 class DemoEvalContextCfg:
     # episode_paths: str = "episodes/20260217_124614/episodes_000000.pt" # single episode of peg insertion
     # episode_paths: str = "episodes/20260222_155251/episodes_000002_trim_subsetx.pt"
-    episode_paths: str = "episodes/20260222_155251/episodes_000000_trim_subsetx.pt"
+    episode_paths: str = "episodes/20260303_034130/episodes_000000_trim.pt"
     # episode_paths: str = "episodes/20260222_164621/episodes_000000_trim_train90_train.pt"
     # episode_paths: list[str] = [
     #     "episodes/20260128_011438/episodes_000000.pt",
@@ -1251,6 +1251,7 @@ class FromDemoPriviledgedTrainTerminationsCfg:
 @configclass
 class EpisodeTimeoutTerminationsCfg:
     # time_out = DoneTerm(func=omni_reset_mdp.time_out, time_out=True)
+    abnormal_robot = DoneTerm(func=omni_reset_mdp.abnormal_robot_state)
 
     end_of_demo = DoneTerm(func=from_demo_mdp.end_of_demo)
 

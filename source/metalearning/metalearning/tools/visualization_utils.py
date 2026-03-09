@@ -18,6 +18,9 @@ def load_episodes(path: Path) -> list[dict[str, Any]]:
         raise ValueError("Found paired rollouts; use _load_pairs instead.")
     if isinstance(data, dict) and "episodes" in data:
         episodes = data["episodes"]
+    elif isinstance(data, dict) and "episode_groups" in data:
+        episode_groups = data["episode_groups"]
+        episodes = [episode for group in episode_groups for episode in group]
     elif isinstance(data, list):
         episodes = data
     elif isinstance(data, dict) and "obs" in data:

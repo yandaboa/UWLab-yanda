@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping
 
@@ -184,6 +185,28 @@ def concat_context_and_rollout(
     return combined, combined_lengths
 
 
+def append_current_trajectory_prefix(
+    context_obs: torch.Tensor,
+    context_actions: torch.Tensor,
+    context_rewards: torch.Tensor,
+    current_traj_obs: torch.Tensor,
+    current_traj_actions: torch.Tensor,
+    current_traj_rewards: torch.Tensor,
+    query_timestep: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Append current trajectory prefix [0, query_timestep) to context sequences."""
+    assert context_obs.ndim == 2 and context_actions.ndim == 2 and context_rewards.ndim == 2
+    assert current_traj_obs.ndim == 2 and current_traj_actions.ndim == 2 and current_traj_rewards.ndim == 2
+    assert int(current_traj_obs.shape[0]) == int(current_traj_actions.shape[0]) == int(current_traj_rewards.shape[0])
+    assert 0 <= query_timestep <= int(current_traj_obs.shape[0])
+    if query_timestep == 0:
+        return context_obs, context_actions, context_rewards
+    obs = torch.cat([context_obs, current_traj_obs[:query_timestep]], dim=0)
+    actions = torch.cat([context_actions, current_traj_actions[:query_timestep]], dim=0)
+    rewards = torch.cat([context_rewards, current_traj_rewards[:query_timestep]], dim=0)
+    return obs, actions, rewards
+
+
 class ContextEpisodeDataset(Dataset[dict[str, torch.Tensor]]):
     """Dataset of context episodes stored in .pt files."""
 
@@ -223,9 +246,16 @@ class ContextStepDataset(Dataset[dict[str, torch.Tensor]]):
         episode_paths: Iterable[str],
         obs_keys: list[str] | None,
         include_data_augs: bool = False,
+        include_current_trajectory: bool = False,
     ) -> None:
         self.obs_keys = obs_keys
         self.include_data_augs = bool(include_data_augs)
+        self.include_current_trajectory = bool(include_current_trajectory)
+        print(f"INFO: initializing ContextStepDataset with include_data_augs={self.include_data_augs} and include_current_trajectory={self.include_current_trajectory}")
+        assert not (self.include_data_augs and self.include_current_trajectory), (
+            "ContextStepDataset does not support include_data_augs=True with "
+            "include_current_trajectory=True."
+        )
         self.episodes: list[dict[str, Any]] = []
         self.step_index: list[tuple[int, Literal["real", "aug"], int]] = []
         self.real_sample_count = 0
@@ -271,13 +301,377 @@ class ContextStepDataset(Dataset[dict[str, torch.Tensor]]):
         obs_seq = obs_seq[:length]
         actions = actions[:length].reshape(length, -1)
         rewards = coerce_rewards(rewards, length)
+        current_obs = obs_seq[t] if sample_kind == "real" else episode["ccil_synthetic_flat"]["state"][t]
+        target_action = actions[t] if sample_kind == "real" else episode["ccil_synthetic_flat"]["action"][t]
+        context_obs = obs_seq
+        context_actions = actions
+        context_rewards = rewards
+        if self.include_current_trajectory:
+            assert sample_kind == "real", (
+                "include_current_trajectory=True is only supported for real samples "
+                "(data augmentations must be disabled)."
+            )
+            context_obs, context_actions, context_rewards = append_current_trajectory_prefix(
+                context_obs,
+                context_actions,
+                context_rewards,
+                obs_seq,
+                actions,
+                rewards,
+                query_timestep=t,
+            )
+        return {
+            "obs": context_obs,
+            "actions": context_actions,
+            "rewards": context_rewards,
+            "length": torch.tensor(int(context_obs.shape[0]), dtype=torch.long),
+            "current_obs": current_obs,
+            "target_action": target_action,
+        }
+
+
+class EpisodeGroupDataset(Dataset[dict[str, torch.Tensor]]):
+    """Dataset for grouped demonstrations with variable multi-episode context.
+
+    Each sample is anchored by a query timestep from one episode in a group. The
+    context is built from a random permutation prefix of *other* episodes in the
+    group, and the query is taken from the held-out episode at the next position.
+    The supervision target is the action at the query timestep.
+    """
+
+    def __init__(
+        self,
+        episode_paths: Iterable[str],
+        obs_keys: list[str] | None,
+        randomize_context: bool = True,
+        base_seed: int = 0,
+        num_context_episodes: int | None = None,
+        minimum_num_context_trajs: int = 1,
+        include_current_trajectory: bool = False,
+    ) -> None:
+        self.obs_keys = obs_keys
+        self.randomize_context = bool(randomize_context)
+        self.base_seed = int(base_seed)
+        self.num_context_episodes = None if num_context_episodes is None else int(num_context_episodes)
+        self.minimum_num_context_trajs = int(minimum_num_context_trajs)
+        self.include_current_trajectory = bool(include_current_trajectory)
+        print(f"INFO: include_current_trajectory={self.include_current_trajectory}")
+        if self.minimum_num_context_trajs <= 0:
+            raise ValueError("minimum_num_context_trajs must be positive.")
+        self.groups: list[list[dict[str, torch.Tensor]]] = []
+        self.step_index: list[tuple[int, int, int]] = []
+        self.max_context_length = 0
+        for path in episode_paths:
+            data = torch.load(path, map_location="cpu")
+            loaded_groups = data.get("episode_groups", [])
+            assert isinstance(loaded_groups, list), f"Expected 'episode_groups' list in {path}."
+            for raw_group in loaded_groups:
+                assert isinstance(raw_group, list) and len(raw_group) > 0, f"Expected non-empty group in {path}."
+                group: list[dict[str, torch.Tensor]] = []
+                for episode in raw_group:
+                    obs = episode["obs"]
+                    actions = episode["actions"]
+                    rewards = episode.get("rewards")
+                    length = int(episode.get("length", actions.shape[0]))
+                    obs_seq = flatten_obs(obs, self.obs_keys, exclude_keys="debug")
+                    if self.obs_keys is None and isinstance(obs, Mapping):
+                        self.obs_keys = list(obs.keys())
+                    actions_seq = actions[:length].reshape(length, -1)
+                    rewards_seq = coerce_rewards(rewards, length)
+                    group.append(
+                        {
+                            "obs": obs_seq[:length],
+                            "actions": actions_seq,
+                            "rewards": rewards_seq,
+                            "length": torch.tensor(length, dtype=torch.long),
+                        }
+                    )
+                if len(group) <= 1:
+                    # Skip singleton groups: no held-out query episode can be paired with non-empty context.
+                    continue
+                group_idx = len(self.groups)
+                self.groups.append(group)
+                group_total_len = 0
+                min_ep_len = None
+                for ep_idx, ep in enumerate(group):
+                    length = int(ep["length"].item())
+                    group_total_len += length
+                    min_ep_len = length if min_ep_len is None else min(min_ep_len, length)
+                    self.step_index.extend([(group_idx, ep_idx, t) for t in range(length)])
+                assert min_ep_len is not None
+                # Max context excludes the held-out query episode unless current trajectory prefix is appended.
+                if self.include_current_trajectory:
+                    self.max_context_length = max(self.max_context_length, max(group_total_len - 1, 0))
+                else:
+                    self.max_context_length = max(self.max_context_length, group_total_len - min_ep_len)
+
+    def __len__(self) -> int:
+        return len(self.step_index)
+
+    def _sample_context_episode_indices(self, group_size: int, query_ep_idx: int, sample_idx: int) -> list[int]:
+        if group_size <= 1:
+            return []
+        available = [idx for idx in range(group_size) if idx != query_ep_idx]
+        max_context_eps = len(available)
+        assert max_context_eps > 0
+        if self.num_context_episodes is not None:
+            if self.num_context_episodes > max_context_eps:
+                return available
+            num_context_eps = self.num_context_episodes
+        elif self.randomize_context:
+            if self.minimum_num_context_trajs > max_context_eps:
+                raise ValueError(
+                    f"minimum_num_context_trajs={self.minimum_num_context_trajs} exceeds "
+                    f"available context episodes ({max_context_eps}) for held-out grouped sampling."
+                )
+            num_context_eps = random.randint(self.minimum_num_context_trajs, max_context_eps)
+        else:
+            generator = torch.Generator()
+            generator.manual_seed(self.base_seed + sample_idx)
+            if self.minimum_num_context_trajs > max_context_eps:
+                raise ValueError(
+                    f"minimum_num_context_trajs={self.minimum_num_context_trajs} exceeds "
+                    f"available context episodes ({max_context_eps}) for held-out grouped sampling."
+                )
+            num_context_eps = int(
+                torch.randint(
+                    self.minimum_num_context_trajs,
+                    max_context_eps + 1,
+                    (1,),
+                    generator=generator,
+                ).item()
+            )
+        if self.randomize_context:
+            perm = torch.randperm(max_context_eps).tolist()
+        else:
+            generator = torch.Generator()
+            generator.manual_seed(self.base_seed + sample_idx)
+            perm = torch.randperm(max_context_eps, generator=generator).tolist()
+        return [available[idx] for idx in perm[:num_context_eps]]
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        group_idx, query_ep_idx, t = self.step_index[idx]
+        group = self.groups[group_idx]
+        selected_ep_indices = self._sample_context_episode_indices(
+            len(group), query_ep_idx, sample_idx=idx
+        )
+        query_episode = group[query_ep_idx]
+        assert len(selected_ep_indices) > 0, "Expected at least one context episode for grouped samples."
+        selected_obs = [group[ep_idx]["obs"] for ep_idx in selected_ep_indices]
+        selected_actions = [group[ep_idx]["actions"] for ep_idx in selected_ep_indices]
+        selected_rewards = [group[ep_idx]["rewards"] for ep_idx in selected_ep_indices]
+        obs_seq = torch.cat(selected_obs, dim=0)
+        actions_seq = torch.cat(selected_actions, dim=0)
+        rewards_seq = torch.cat(selected_rewards, dim=0)
+        if self.include_current_trajectory:
+            obs_seq, actions_seq, rewards_seq = append_current_trajectory_prefix(
+                obs_seq,
+                actions_seq,
+                rewards_seq,
+                query_episode["obs"],
+                query_episode["actions"],
+                query_episode["rewards"],
+                query_timestep=t,
+            )
         return {
             "obs": obs_seq,
-            "actions": actions,
-            "rewards": rewards,
-            "length": torch.tensor(length, dtype=torch.long),
-            "current_obs": obs_seq[t] if sample_kind == "real" else episode["ccil_synthetic_flat"]["state"][t],
-            "target_action": actions[t] if sample_kind == "real" else episode["ccil_synthetic_flat"]["action"][t],
+            "actions": actions_seq,
+            "rewards": rewards_seq,
+            "length": torch.tensor(int(obs_seq.shape[0]), dtype=torch.long),
+            "current_obs": query_episode["obs"][t],
+            "target_action": query_episode["actions"][t],
+        }
+
+
+class SplineQueryEpisodeGroupDataset(Dataset[dict[str, torch.Tensor]]):
+    """Grouped dataset with query state/action from per-group spline reference.
+
+    Each sample is:
+      - context: concatenation of one or more noisy rollout episodes from the group
+      - query state: from the group's spline/reference trajectory at timestep t
+      - target action: from the same spline/reference timestep
+    """
+
+    def __init__(
+        self,
+        episode_paths: Iterable[str],
+        obs_keys: list[str] | None,
+        randomize_context: bool = True,
+        base_seed: int = 0,
+        num_context_episodes: int | None = None,
+        minimum_num_context_trajs: int = 1,
+        include_current_trajectory: bool = False,
+    ) -> None:
+        _ = obs_keys
+        self.obs_keys = None
+        self.randomize_context = bool(randomize_context)
+        self.base_seed = int(base_seed)
+        self.num_context_episodes = None if num_context_episodes is None else int(num_context_episodes)
+        self.minimum_num_context_trajs = int(minimum_num_context_trajs)
+        self.include_current_trajectory = bool(include_current_trajectory)
+        if self.minimum_num_context_trajs <= 0:
+            raise ValueError("minimum_num_context_trajs must be positive.")
+
+        self.groups: list[list[dict[str, torch.Tensor]]] = []
+        self.group_queries: list[dict[str, torch.Tensor]] = []
+        self.step_index: list[tuple[int, int]] = []
+        self.max_context_length = 0
+
+        for path in episode_paths:
+            data = torch.load(path, map_location="cpu")
+            loaded_groups = data.get("episode_groups", [])
+            loaded_splines = data.get("group_splines", [])
+            assert isinstance(loaded_groups, list), f"Expected 'episode_groups' list in {path}."
+            assert isinstance(loaded_splines, list), f"Expected 'group_splines' list in {path}."
+            assert len(loaded_groups) == len(loaded_splines), (
+                f"Mismatched grouped payload in {path}: "
+                f"{len(loaded_groups)} episode groups vs {len(loaded_splines)} group_splines."
+            )
+
+            for raw_group, raw_spline in zip(loaded_groups, loaded_splines):
+                assert isinstance(raw_group, list) and len(raw_group) > 0, f"Expected non-empty group in {path}."
+                group: list[dict[str, torch.Tensor]] = []
+                group_total_len = 0
+                for episode in raw_group:
+                    obs = episode["obs"]
+                    actions = episode["actions"]
+                    rewards = episode.get("rewards")
+                    length = int(episode.get("length", actions.shape[0]))
+                    obs_seq = flatten_obs(obs, None, exclude_keys="debug")
+                    actions_seq = actions[:length].reshape(length, -1)
+                    rewards_seq = coerce_rewards(rewards, length)
+                    group.append(
+                        {
+                            "obs": obs_seq[:length],
+                            "actions": actions_seq,
+                            "rewards": rewards_seq,
+                            "length": torch.tensor(length, dtype=torch.long),
+                        }
+                    )
+                    group_total_len += length
+
+                if len(group) == 0:
+                    continue
+
+                query_obs, query_actions = self._build_query_from_spline(raw_spline)
+                query_len = int(min(query_obs.shape[0], query_actions.shape[0]))
+                if query_len <= 0:
+                    continue
+                query_obs = query_obs[:query_len]
+                query_actions = query_actions[:query_len]
+
+                group_idx = len(self.groups)
+                self.groups.append(group)
+                self.group_queries.append({"obs": query_obs, "actions": query_actions})
+                self.step_index.extend([(group_idx, t) for t in range(query_len)])
+                if self.include_current_trajectory:
+                    self.max_context_length = max(self.max_context_length, group_total_len + max(query_len - 1, 0))
+                else:
+                    self.max_context_length = max(self.max_context_length, group_total_len)
+
+    def _build_query_from_spline(
+        self,
+        spline: Mapping[str, Any],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if not isinstance(spline, Mapping):
+            raise TypeError("Each group spline entry must be a mapping.")
+        if "obs" not in spline or "actions" not in spline:
+            raise ValueError(
+                "Each group_splines entry must contain 'obs' and 'actions' "
+                "saved in episode format."
+            )
+
+        query_obs = flatten_obs(spline["obs"], None, exclude_keys="debug")
+        query_actions = torch.as_tensor(spline["actions"]).reshape(spline["actions"].shape[0], -1)
+
+        return query_obs.to(dtype=torch.float32), query_actions.to(dtype=torch.float32)
+
+    def __len__(self) -> int:
+        return len(self.step_index)
+
+    def _sample_context_episode_indices(self, group_size: int, sample_idx: int) -> list[int]:
+        if group_size <= 0:
+            return []
+        if group_size == 1:
+            if self.num_context_episodes is not None and self.num_context_episodes != 1:
+                raise ValueError(
+                    f"Requested num_context_episodes={self.num_context_episodes}, "
+                    "but group has only one episode."
+                )
+            return [0]
+        available = list(range(group_size))
+        if self.num_context_episodes is not None:
+            if self.num_context_episodes > group_size:
+                raise ValueError(
+                    f"Requested num_context_episodes={self.num_context_episodes}, "
+                    f"but group has only {group_size} episodes."
+                )
+            num_context_eps = self.num_context_episodes
+        elif self.randomize_context:
+            if self.minimum_num_context_trajs > group_size:
+                raise ValueError(
+                    f"minimum_num_context_trajs={self.minimum_num_context_trajs} exceeds "
+                    f"group size ({group_size}) for grouped sampling."
+                )
+            num_context_eps = random.randint(self.minimum_num_context_trajs, group_size)
+        else:
+            generator = torch.Generator()
+            generator.manual_seed(self.base_seed + sample_idx)
+            if self.minimum_num_context_trajs > group_size:
+                raise ValueError(
+                    f"minimum_num_context_trajs={self.minimum_num_context_trajs} exceeds "
+                    f"group size ({group_size}) for grouped sampling."
+                )
+            num_context_eps = int(
+                torch.randint(
+                    self.minimum_num_context_trajs,
+                    group_size + 1,
+                    (1,),
+                    generator=generator,
+                ).item()
+            )
+        if self.randomize_context:
+            perm = torch.randperm(group_size).tolist()
+        else:
+            generator = torch.Generator()
+            generator.manual_seed(self.base_seed + sample_idx)
+            perm = torch.randperm(group_size, generator=generator).tolist()
+        return [available[idx] for idx in perm[:num_context_eps]]
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        group_idx, t = self.step_index[idx]
+        group = self.groups[group_idx]
+        query = self.group_queries[group_idx]
+
+        selected_ep_indices = self._sample_context_episode_indices(len(group), sample_idx=idx)
+        assert len(selected_ep_indices) > 0, "Expected at least one context episode."
+        selected_obs = [group[ep_idx]["obs"] for ep_idx in selected_ep_indices]
+        selected_actions = [group[ep_idx]["actions"] for ep_idx in selected_ep_indices]
+        selected_rewards = [group[ep_idx]["rewards"] for ep_idx in selected_ep_indices]
+        obs_seq = torch.cat(selected_obs, dim=0)
+        actions_seq = torch.cat(selected_actions, dim=0)
+        rewards_seq = torch.cat(selected_rewards, dim=0)
+        if self.include_current_trajectory:
+            query_rewards = torch.zeros(
+                (query["obs"].shape[0], rewards_seq.shape[-1]),
+                dtype=rewards_seq.dtype,
+            )
+            obs_seq, actions_seq, rewards_seq = append_current_trajectory_prefix(
+                obs_seq,
+                actions_seq,
+                rewards_seq,
+                query["obs"],
+                query["actions"],
+                query_rewards,
+                query_timestep=t,
+            )
+        return {
+            "obs": obs_seq,
+            "actions": actions_seq,
+            "rewards": rewards_seq,
+            "length": torch.tensor(int(obs_seq.shape[0]), dtype=torch.long),
+            "current_obs": query["obs"][t],
+            "target_action": query["actions"][t],
         }
 
 

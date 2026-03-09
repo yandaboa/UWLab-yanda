@@ -144,7 +144,7 @@ These are critical to avoid incorrect assumptions:
 - Empty / wrong `episode_paths` -> context construction failure.
 - Mixed episode shapes across files -> load/pad failures in dataset/context utilities.
 - Distributed training startup collision -> set a different torch distributed master port.
-- `include_current_trajectory=True` in supervised training is currently unsupported and raises an error.
+- `include_current_trajectory=True` appends the current rollout prefix (`0..i-1`) to context; query step is still provided via `current_obs` with `target_action` supervision.
 - `share_current_and_context_obs_projection=True` requires `current_obs` and `context_obs` feature sizes to match; otherwise model init/token build raises an error.
 - `encoding_projection_hidden_dim=<N>` switches obs encoders from a single linear projection to a shallow MLP (`in -> N -> embedding`).
 - For supervised eval, ensure `--supervised_context_checkpoint` and compatible observation keys are provided.

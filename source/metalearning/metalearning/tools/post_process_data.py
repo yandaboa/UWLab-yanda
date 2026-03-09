@@ -8,7 +8,34 @@ from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
 
 import torch
 
-from .visualization_utils import load_episodes, trim_to_length
+from .visualization_utils import trim_to_length
+
+
+def _load_episode_payload(path: Path) -> dict[str, Any]:
+    data = torch.load(path, map_location="cpu")
+    if isinstance(data, dict) and "pairs" in data:
+        raise ValueError("Found paired rollouts; this script expects episode files.")
+    if isinstance(data, dict) and "episode_groups" in data:
+        episode_groups = data["episode_groups"]
+        if not episode_groups:
+            raise ValueError(f"No episode groups found in {path}.")
+        payload = {
+            "episode_groups": episode_groups,
+            "num_similar_trajectories": data.get("num_similar_trajectories"),
+        }
+        return payload
+    if isinstance(data, dict) and "episodes" in data:
+        episodes = data["episodes"]
+        if not episodes:
+            raise ValueError(f"No episodes found in {path}.")
+        return {"episodes": episodes}
+    if isinstance(data, list):
+        if not data:
+            raise ValueError(f"No episodes found in {path}.")
+        return {"episodes": data}
+    if isinstance(data, dict) and "obs" in data:
+        return {"episodes": [data]}
+    raise ValueError(f"Unsupported file format in {path}.")
 
 
 def _episode_success_flag(episode: Mapping[str, Any]) -> bool:
@@ -147,6 +174,23 @@ def split_train_eval(
     return train, eval_episodes
 
 
+def split_train_eval_groups(
+    episode_groups: list[list[dict[str, Any]]], train_ratio: float, seed: int
+) -> Tuple[list[list[dict[str, Any]]], list[list[dict[str, Any]]]]:
+    if train_ratio <= 0.0 or train_ratio >= 1.0:
+        raise ValueError("train_ratio must be in (0, 1).")
+    if not episode_groups:
+        return [], []
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    indices = torch.randperm(len(episode_groups), generator=generator).tolist()
+    train_count = max(1, int(round(len(episode_groups) * train_ratio)))
+    train_idx = set(indices[:train_count])
+    train = [group for idx, group in enumerate(episode_groups) if idx in train_idx]
+    eval_groups = [group for idx, group in enumerate(episode_groups) if idx not in train_idx]
+    return train, eval_groups
+
+
 def _collect_episode_files(path: Path, pattern: str) -> list[Path]:
     return sorted([item for item in path.iterdir() if item.is_file() and item.match(pattern)])
 
@@ -182,10 +226,33 @@ def _process_file(
     split_ratio: Optional[float],
     split_seed: int,
 ) -> list[Path]:
-    episodes = load_episodes(input_path)
-    processed = apply_episode_filters(episodes, filters)
+    payload = _load_episode_payload(input_path)
+    is_grouped = "episode_groups" in payload
+    if is_grouped:
+        episode_groups = payload["episode_groups"]
+        processed_groups = [
+            apply_episode_filters(group, filters) for group in episode_groups if len(group) > 0
+        ]
+    else:
+        episodes = payload["episodes"]
+        processed = apply_episode_filters(episodes, filters)
     saved_paths: list[Path] = []
     if split_ratio is not None:
+        base_suffix = _build_suffix_parts(filter_tags, split_ratio)
+        if is_grouped:
+            train_groups, eval_groups = split_train_eval_groups(processed_groups, split_ratio, split_seed)
+            num_similar_trajectories = payload.get("num_similar_trajectories")
+            train_path = _resolve_out_path(input_path, out_path, out_dir, suffix=f"{base_suffix}_train")
+            eval_path = _resolve_out_path(input_path, None, out_dir, suffix=f"{base_suffix}_eval")
+            train_payload: dict[str, Any] = {"episode_groups": train_groups}
+            eval_payload: dict[str, Any] = {"episode_groups": eval_groups}
+            if num_similar_trajectories is not None:
+                train_payload["num_similar_trajectories"] = num_similar_trajectories
+                eval_payload["num_similar_trajectories"] = num_similar_trajectories
+            torch.save(train_payload, train_path)
+            torch.save(eval_payload, eval_path)
+            saved_paths.extend([train_path, eval_path])
+            return saved_paths
         train, eval_episodes = split_train_eval(processed, split_ratio, split_seed)
         base_suffix = _build_suffix_parts(filter_tags, split_ratio)
         train_path = _resolve_out_path(input_path, out_path, out_dir, suffix=f"{base_suffix}_train")
@@ -196,7 +263,14 @@ def _process_file(
     else:
         suffix = _build_suffix_parts(filter_tags, None)
         resolved_out = _resolve_out_path(input_path, out_path, out_dir, suffix=suffix)
-        torch.save({"episodes": processed}, resolved_out)
+        if is_grouped:
+            out_payload: dict[str, Any] = {"episode_groups": processed_groups}
+            num_similar_trajectories = payload.get("num_similar_trajectories")
+            if num_similar_trajectories is not None:
+                out_payload["num_similar_trajectories"] = num_similar_trajectories
+            torch.save(out_payload, resolved_out)
+        else:
+            torch.save({"episodes": processed}, resolved_out)
         saved_paths.append(resolved_out)
     return saved_paths
 

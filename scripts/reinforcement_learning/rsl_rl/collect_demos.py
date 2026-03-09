@@ -69,6 +69,7 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
+import math
 import os
 import time
 from typing import Mapping, cast
@@ -274,12 +275,41 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         action_shape=action_shape,
         device=env.unwrapped.device,
     )
+    raw_num_similar_trajectories = (
+        agent_cfg.get("num_similar_trajectories")
+        if isinstance(agent_cfg, dict)
+        else getattr(agent_cfg, "num_similar_trajectories", None)
+    )
+    num_similar_trajectories: int | None = None
+    if raw_num_similar_trajectories is not None:
+        parsed_num_similar_trajectories = int(raw_num_similar_trajectories)
+        assert parsed_num_similar_trajectories > 0, "num_similar_trajectories must be > 0."
+        if parsed_num_similar_trajectories > 1:
+            num_similar_trajectories = parsed_num_similar_trajectories
+    raw_action_noise_variance = (
+        agent_cfg.get("action_noise_variance")
+        if isinstance(agent_cfg, dict)
+        else getattr(agent_cfg, "action_noise_variance", 0.0)
+    )
+    action_noise_variance = float(raw_action_noise_variance) if raw_action_noise_variance is not None else 0.0
+    assert action_noise_variance >= 0.0, "action_noise_variance must be >= 0."
+    action_noise_std = math.sqrt(action_noise_variance)
     episode_storage = EpisodeStorage(
         max_num_episodes=args_cli.max_demos_before_saving,
         save_dir=episodes_dir,
+        num_similar_trajectories=num_similar_trajectories,
     )
     progress_bar = tqdm(total=args_cli.num_demos, desc="Demos collected", unit="demos")
     manager_env = cast(ManagerBasedEnv, env.unwrapped)
+    if num_similar_trajectories is not None:
+        setattr(manager_env, "num_similar_trajectories", num_similar_trajectories)
+        setattr(
+            manager_env,
+            "num_collected_episodes",
+            torch.zeros(
+                (manager_env.num_envs,), dtype=torch.int64, device=manager_env.device
+            ),
+        )
     state_storage = StateStorage(
         manager_env,
         save_raw_states=args_cli.save_raw_states,
@@ -301,6 +331,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         with torch.inference_mode():
             # agent stepping
             actions = policy(previous_obs)
+            if action_noise_std > 0.0 and torch.is_floating_point(actions):
+                actions = actions + torch.randn_like(actions) * action_noise_std
             if environment_noise is not None:
                 actions = environment_noise.step_action(actions)
             # env stepping
@@ -325,6 +357,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             policy_nn.reset(done_mask)
             if torch.any(done_mask):
                 done_env_ids = torch.nonzero(done_mask, as_tuple=True)[0]
+                if num_similar_trajectories is not None:
+                    num_collected_episodes = getattr(manager_env, "num_collected_episodes", None)
+                    assert isinstance(
+                        num_collected_episodes, torch.Tensor
+                    ), "Expected env.num_collected_episodes to be a tensor."
+                    num_collected_episodes[done_env_ids] = (
+                        num_collected_episodes[done_env_ids] + 1
+                    ) % num_similar_trajectories
                 rollouts = rollout_storage.get_rollouts(done_env_ids)
                 states, physics = state_storage.fetch(done_env_ids)
                 rollouts["states"] = states

@@ -368,6 +368,29 @@ def _plot_suffix(backend: str) -> str:
     return ".html" if backend == "plotly" else ".png"
 
 
+def _load_episode_groups(path: Path) -> list[list[Mapping[str, Any]]]:
+    data = torch.load(path, map_location="cpu")
+    if not (isinstance(data, dict) and "episode_groups" in data):
+        return []
+    episode_groups = data["episode_groups"]
+    if not isinstance(episode_groups, list):
+        raise ValueError("Expected 'episode_groups' to be a list.")
+    parsed_groups: list[list[Mapping[str, Any]]] = []
+    for group in episode_groups:
+        if not isinstance(group, list):
+            raise ValueError("Expected each episode group to be a list.")
+        parsed_groups.append(group)
+    return parsed_groups
+
+
+def _select_episode_group(
+    episode_groups: list[list[Mapping[str, Any]]], index: int
+) -> list[Mapping[str, Any]]:
+    if index < 0 or index >= len(episode_groups):
+        raise IndexError(f"Episode group index {index} out of range (0..{len(episode_groups) - 1}).")
+    return episode_groups[index]
+
+
 def _episode_success_flag(episode: Mapping[str, Any]) -> bool:
     success = episode.get("success")
     if isinstance(success, torch.Tensor):
@@ -609,50 +632,73 @@ def main() -> None:
                 plot_episode_rewards(rollout_episodes, rollout_labels, reward_out, backend=args.backend)
                 print(f"[INFO] Saved plot: {reward_out}")
     else:
-        episodes = load_episodes(args.path)
-        if len(episode_idxs) == 1:
-            episode = select_episode(episodes, episode_idxs[0])
-            length = int(episode["length"]) if "length" in episode else None
-            obs = episode["obs"]
-            obs_key = args.obs_key or "end_effector_pose"
-            debug_obs, debug_key = get_pose_obs(obs, obs_key)
-            debug_obs = trim_to_length(debug_obs, length)
-            if debug_obs.shape[-1] < 3:
-                raise ValueError(f"debug_obs has last dim {debug_obs.shape[-1]}, expected at least 3.")
-            eef_obs = debug_obs[..., :3]
-            eef_out = out_dir / f"episode_{episode_idxs[0]:04d}_eef{_plot_suffix(args.backend)}"
-            if args.backend == "plotly":
-                _plot_traj3d_plotly(eef_obs, f"End Effector ({debug_key}[:3])", eef_out)
+        episode_groups = _load_episode_groups(args.path)
+        print(f"[INFO] Loaded {len(episode_groups)} episode groups from {args.path}")
+        if episode_groups:
+            if len(episode_idxs) == 1:
+                group = _select_episode_group(episode_groups, episode_idxs[0])
+                eef_trajs = []
+                labels = []
+                debug_key = ""
+                for traj_idx, episode in enumerate(group):
+                    length = int(episode["length"]) if "length" in episode else None
+                    obs = episode["obs"]
+                    obs_key = args.obs_key or "end_effector_pose"
+                    debug_obs, debug_key = get_pose_obs(obs, obs_key)
+                    debug_obs = trim_to_length(debug_obs, length)
+                    if debug_obs.shape[-1] < 3:
+                        raise ValueError(f"debug_obs has last dim {debug_obs.shape[-1]}, expected at least 3.")
+                    eef_trajs.append(debug_obs[..., :3])
+                    labels.append(f"group_{episode_idxs[0]:04d}_traj_{traj_idx:02d}")
+                eef_out = out_dir / f"group_{episode_idxs[0]:04d}_eef_multi{_plot_suffix(args.backend)}"
+                if args.backend == "plotly":
+                    _plot_traj3d_multi_plotly(eef_trajs, labels, f"Group {episode_idxs[0]:04d} ({debug_key}[:3])", eef_out)
+                else:
+                    _plot_traj3d_multi(eef_trajs, labels, f"Group {episode_idxs[0]:04d} ({debug_key}[:3])", eef_out)
+                print(f"[INFO] Saved plot: {eef_out}")
+                if args.plot_rewards:
+                    reward_out = out_dir / f"group_{episode_idxs[0]:04d}_rewards{_plot_suffix(args.backend)}"
+                    plot_episode_rewards(group, labels, reward_out, backend=args.backend)
+                    print(f"[INFO] Saved plot: {reward_out}")
+                if args.plot_actions:
+                    print("[INFO] --plot-actions for grouped episodes is not supported; skipping.")
             else:
-                plot_traj3d(eef_obs, f"End Effector ({debug_key}[:3])", eef_out)
-            print(f"[INFO] Saved plot: {eef_out}")
-            if args.plot_actions:
-                actions = episode.get("actions")
-                if isinstance(actions, torch.Tensor):
-                    actions = trim_to_length(actions, length)
-                    action_out = out_dir / f"episode_{episode_idxs[0]:04d}_actions{_plot_suffix(args.backend)}"
-                    if args.backend == "plotly":
-                        _plot_series_plotly(actions, "Actions", "action", action_out)
-                    else:
-                        plot_series(actions, "Actions", "action", action_out)
-                    print(f"[INFO] Saved plot: {action_out}")
-            if args.plot_rewards:
-                reward_out = out_dir / f"episode_{episode_idxs[0]:04d}_rewards{_plot_suffix(args.backend)}"
-                plot_episode_rewards(
-                    [episode],
-                    [f"episode_{episode_idxs[0]:04d}"],
-                    reward_out,
-                    backend=args.backend,
-                )
-                print(f"[INFO] Saved plot: {reward_out}")
+                combined_trajs = []
+                combined_labels = []
+                grouped_episodes = []
+                grouped_episode_labels = []
+                debug_key = ""
+                for group_idx in episode_idxs:
+                    group = _select_episode_group(episode_groups, group_idx)
+                    for traj_idx, episode in enumerate(group):
+                        length = int(episode["length"]) if "length" in episode else None
+                        obs = episode["obs"]
+                        obs_key = args.obs_key or "end_effector_pose"
+                        debug_obs, debug_key = get_pose_obs(obs, obs_key)
+                        debug_obs = trim_to_length(debug_obs, length)
+                        if debug_obs.shape[-1] < 3:
+                            raise ValueError(f"debug_obs has last dim {debug_obs.shape[-1]}, expected at least 3.")
+                        combined_trajs.append(debug_obs[..., :3])
+                        label = f"g{group_idx:04d}_t{traj_idx:02d}"
+                        combined_labels.append(label)
+                        grouped_episodes.append(episode)
+                        grouped_episode_labels.append(label)
+                eef_out = out_dir / f"groups_multi_eef{_plot_suffix(args.backend)}"
+                if args.backend == "plotly":
+                    _plot_traj3d_multi_plotly(combined_trajs, combined_labels, f"Episode Groups ({debug_key}[:3])", eef_out)
+                else:
+                    _plot_traj3d_multi(combined_trajs, combined_labels, f"Episode Groups ({debug_key}[:3])", eef_out)
+                print(f"[INFO] Saved plot: {eef_out}")
+                if args.plot_rewards and grouped_episodes:
+                    reward_out = out_dir / f"groups_multi_rewards{_plot_suffix(args.backend)}"
+                    plot_episode_rewards(grouped_episodes, grouped_episode_labels, reward_out, backend=args.backend)
+                    print(f"[INFO] Saved plot: {reward_out}")
+                if args.plot_actions:
+                    print("[INFO] --plot-actions for grouped episodes is not supported; skipping.")
         else:
-            eef_trajs = []
-            labels = []
-            debug_key = ""
-            reward_episodes = []
-            reward_labels = []
-            for idx in episode_idxs:
-                episode = select_episode(episodes, idx)
+            episodes = load_episodes(args.path)
+            if len(episode_idxs) == 1:
+                episode = select_episode(episodes, episode_idxs[0])
                 length = int(episode["length"]) if "length" in episode else None
                 obs = episode["obs"]
                 obs_key = args.obs_key or "end_effector_pose"
@@ -660,20 +706,61 @@ def main() -> None:
                 debug_obs = trim_to_length(debug_obs, length)
                 if debug_obs.shape[-1] < 3:
                     raise ValueError(f"debug_obs has last dim {debug_obs.shape[-1]}, expected at least 3.")
-                eef_trajs.append(debug_obs[..., :3])
-                labels.append(f"episode_{idx:04d}")
-                reward_episodes.append(episode)
-                reward_labels.append(f"episode_{idx:04d}")
-            eef_out = out_dir / f"episodes_multi_eef{_plot_suffix(args.backend)}"
-            if args.backend == "plotly":
-                _plot_traj3d_multi_plotly(eef_trajs, labels, f"End Effector ({debug_key}[:3])", eef_out)
+                eef_obs = debug_obs[..., :3]
+                eef_out = out_dir / f"episode_{episode_idxs[0]:04d}_eef{_plot_suffix(args.backend)}"
+                if args.backend == "plotly":
+                    _plot_traj3d_plotly(eef_obs, f"End Effector ({debug_key}[:3])", eef_out)
+                else:
+                    plot_traj3d(eef_obs, f"End Effector ({debug_key}[:3])", eef_out)
+                print(f"[INFO] Saved plot: {eef_out}")
+                if args.plot_actions:
+                    actions = episode.get("actions")
+                    if isinstance(actions, torch.Tensor):
+                        actions = trim_to_length(actions, length)
+                        action_out = out_dir / f"episode_{episode_idxs[0]:04d}_actions{_plot_suffix(args.backend)}"
+                        if args.backend == "plotly":
+                            _plot_series_plotly(actions, "Actions", "action", action_out)
+                        else:
+                            plot_series(actions, "Actions", "action", action_out)
+                        print(f"[INFO] Saved plot: {action_out}")
+                if args.plot_rewards:
+                    reward_out = out_dir / f"episode_{episode_idxs[0]:04d}_rewards{_plot_suffix(args.backend)}"
+                    plot_episode_rewards(
+                        [episode],
+                        [f"episode_{episode_idxs[0]:04d}"],
+                        reward_out,
+                        backend=args.backend,
+                    )
+                    print(f"[INFO] Saved plot: {reward_out}")
             else:
-                _plot_traj3d_multi(eef_trajs, labels, f"End Effector ({debug_key}[:3])", eef_out)
-            print(f"[INFO] Saved plot: {eef_out}")
-            if args.plot_rewards and reward_episodes:
-                reward_out = out_dir / f"episodes_multi_rewards{_plot_suffix(args.backend)}"
-                plot_episode_rewards(reward_episodes, reward_labels, reward_out, backend=args.backend)
-                print(f"[INFO] Saved plot: {reward_out}")
+                eef_trajs = []
+                labels = []
+                debug_key = ""
+                reward_episodes = []
+                reward_labels = []
+                for idx in episode_idxs:
+                    episode = select_episode(episodes, idx)
+                    length = int(episode["length"]) if "length" in episode else None
+                    obs = episode["obs"]
+                    obs_key = args.obs_key or "end_effector_pose"
+                    debug_obs, debug_key = get_pose_obs(obs, obs_key)
+                    debug_obs = trim_to_length(debug_obs, length)
+                    if debug_obs.shape[-1] < 3:
+                        raise ValueError(f"debug_obs has last dim {debug_obs.shape[-1]}, expected at least 3.")
+                    eef_trajs.append(debug_obs[..., :3])
+                    labels.append(f"episode_{idx:04d}")
+                    reward_episodes.append(episode)
+                    reward_labels.append(f"episode_{idx:04d}")
+                eef_out = out_dir / f"episodes_multi_eef{_plot_suffix(args.backend)}"
+                if args.backend == "plotly":
+                    _plot_traj3d_multi_plotly(eef_trajs, labels, f"End Effector ({debug_key}[:3])", eef_out)
+                else:
+                    _plot_traj3d_multi(eef_trajs, labels, f"End Effector ({debug_key}[:3])", eef_out)
+                print(f"[INFO] Saved plot: {eef_out}")
+                if args.plot_rewards and reward_episodes:
+                    reward_out = out_dir / f"episodes_multi_rewards{_plot_suffix(args.backend)}"
+                    plot_episode_rewards(reward_episodes, reward_labels, reward_out, backend=args.backend)
+                    print(f"[INFO] Saved plot: {reward_out}")
 
 
 if __name__ == "__main__":

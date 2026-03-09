@@ -49,6 +49,12 @@ parser.add_argument(
     default=False,
     help="Replay stored demo actions instead of policy outputs.",
 )
+parser.add_argument(
+    "--eval_num_context_trajs",
+    type=int,
+    default=1,
+    help="Number of grouped context trajectories to insert per env during supervised eval.",
+)
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument(
     "--use_pretrained_checkpoint",
@@ -120,68 +126,79 @@ from uwlab_tasks.utils.hydra import hydra_task_config
 from uwlab_tasks.manager_based.manipulation.from_demo.mdp import utils as from_demo_utils
 from metalearning.rollout_pair_storage import RolloutPairStorage, demo_to_episode, rollout_to_episode
 from metalearning.rollout_storage import RolloutStorage
-from metalearning.eval_wandb_utils import EvalWandbLogger, get_tracking_metrics_term, init_eval_wandb
+from metalearning.eval_wandb_utils import (
+    EvalWandbLogger,
+    get_task_metrics_term,
+    get_tracking_metrics_term,
+    init_eval_wandb,
+)
+from metalearning.eval_utils import (
+    build_grouped_context_tensors,
+    flatten_debug_obs,
+    get_replay_actions,
+    resolve_context_log_dir,
+    save_rollout_visualizations,
+    update_demo_snapshot,
+)
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
 
-def _flatten_debug_obs(debug_obs: Any) -> dict[str, torch.Tensor]:
-    if isinstance(debug_obs, Mapping):
-        return {f"debug/{key}": value.detach().clone() for key, value in debug_obs.items()}
-    if isinstance(debug_obs, torch.Tensor):
-        return {"debug": debug_obs.detach().clone()}
-    return {}
-
-
-def _update_demo_snapshot(
+def _apply_grouped_supervised_context(
+    supervised_helper: SupervisedEvalHelper | SupervisedOpenLoopEvalHelper,
     demo_context: Any,
-    env_ids: torch.Tensor,
-    demo_obs_snapshot: dict[str, torch.Tensor] | None,
-    demo_lengths_snapshot: torch.Tensor,
+    obs_keys: list[str],
+    num_context_trajs: int,
+    device: torch.device,
+    env_ids: torch.Tensor | None = None,
 ) -> None:
-    if env_ids.numel() == 0:
+    if num_context_trajs <= 1:
         return
-    env_ids_cpu = env_ids.detach().cpu()
-    demo_lengths_snapshot[env_ids_cpu] = demo_context.demo_obs_lengths[env_ids].detach().cpu()
-    if demo_obs_snapshot is None:
+    if env_ids is not None and env_ids.numel() == 0:
         return
-    demo_obs_dict = demo_context.demo_obs_dict
-    if demo_obs_dict is None:
+    grouped_demo_obs, grouped_demo_actions, grouped_demo_rewards, grouped_demo_lengths = (
+        build_grouped_context_tensors(
+            demo_context=demo_context,
+            obs_keys=obs_keys,
+            num_context_trajs=num_context_trajs,
+            device=device,
+            env_ids=env_ids,
+        )
+    )
+    if env_ids is None:
+        supervised_helper.demo_obs = grouped_demo_obs
+        supervised_helper.demo_actions = grouped_demo_actions
+        supervised_helper.demo_rewards = grouped_demo_rewards
+        supervised_helper.demo_lengths = grouped_demo_lengths
         return
-    for key, value in demo_obs_dict.items():
-        demo_obs_snapshot[key][env_ids_cpu] = value[env_ids].detach().cpu()
 
+    env_ids = env_ids.to(device=device, dtype=torch.long)
 
-def _resolve_demo_actions(demo_actions: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
-    if isinstance(demo_actions, dict):
-        if "demo" in demo_actions:
-            return demo_actions["demo"]
-        raise RuntimeError("Demo actions not found under 'demo' key.")
-    return demo_actions
+    def _pad_seq_to_len(sequence: torch.Tensor, target_len: int) -> torch.Tensor:
+        if sequence.shape[1] >= target_len:
+            return sequence
+        pad = torch.zeros(
+            (sequence.shape[0], target_len - sequence.shape[1], *sequence.shape[2:]),
+            device=sequence.device,
+            dtype=sequence.dtype,
+        )
+        return torch.cat([sequence, pad], dim=1)
 
+    current_len = supervised_helper.demo_obs.shape[1]
+    new_len = grouped_demo_obs.shape[1]
+    target_len = max(current_len, new_len)
+    supervised_helper.demo_obs = _pad_seq_to_len(supervised_helper.demo_obs, target_len)
+    supervised_helper.demo_actions = _pad_seq_to_len(supervised_helper.demo_actions, target_len)
+    supervised_helper.demo_rewards = _pad_seq_to_len(supervised_helper.demo_rewards, target_len)
+    grouped_demo_obs = _pad_seq_to_len(grouped_demo_obs, target_len)
+    grouped_demo_actions = _pad_seq_to_len(grouped_demo_actions, target_len)
+    grouped_demo_rewards = _pad_seq_to_len(grouped_demo_rewards, target_len)
 
-def _get_replay_actions(demo_context: Any, env: ManagerBasedEnv) -> torch.Tensor:
-    demo_actions = _resolve_demo_actions(demo_context.demo_actions)
-    lengths = demo_context.demo_obs_lengths.to(dtype=torch.long)
-    end_idx = (lengths - 1).clamp(min=0)
-    t = torch.minimum(env.episode_length_buf.long(), end_idx)
-    env_ids = torch.arange(env.num_envs, device=demo_actions.device)
-    # Index per-env, per-timestep action from the stored demo buffer.
-    return demo_actions[env_ids, t, :]
+    supervised_helper.demo_obs[env_ids] = grouped_demo_obs
+    supervised_helper.demo_actions[env_ids] = grouped_demo_actions
+    supervised_helper.demo_rewards[env_ids] = grouped_demo_rewards
+    supervised_helper.demo_lengths[env_ids] = grouped_demo_lengths
 
-
-def _resolve_context_log_dir(env_cfg: Any) -> str | None:
-    context_cfg = getattr(env_cfg, "context")
-    if isinstance(context_cfg, dict):
-        episode_paths = context_cfg.get("episode_paths")
-    else:
-        episode_paths = getattr(context_cfg, "episode_paths", None)
-    assert episode_paths is not None
-    if isinstance(episode_paths, str):
-        episode_paths = [episode_paths]
-    episode_list = list(episode_paths)
-    resolved = retrieve_file_path(str(episode_list[0]))
-    return os.path.dirname(resolved)
 
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
@@ -212,9 +229,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         use_supervised = False
     if args_cli.supervised_open_loop and not use_supervised:
         raise ValueError("Open-loop supervised eval requires --supervised_context_checkpoint.")
+    if args_cli.eval_num_context_trajs < 1:
+        raise ValueError("--eval_num_context_trajs must be >= 1.")
     supervised_ckpt_path = None
     if replay_demo_actions:
-        context_root = _resolve_context_log_dir(env_cfg)
+        context_root = resolve_context_log_dir(env_cfg, retrieve_file_path)
         log_base = context_root if context_root is not None else log_root_path
         log_dir = os.path.join(log_base, "eval_demo_tracking", "replay_demo_actions")
     else:
@@ -265,9 +284,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # wrap for video recording
     if args_cli.video:
+        def _video_step_trigger(step: int) -> bool:
+            return step == 0
+
         video_kwargs = {
             "video_folder": os.path.join(log_dir, "videos", "play", timestamp),
-            "step_trigger": lambda step: step == 0,
+            "step_trigger": _video_step_trigger,
             "video_length": args_cli.video_length,
             "disable_logger": True,
         }
@@ -374,19 +396,33 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     )
     demo_lengths_snapshot = demo_context.demo_obs_lengths.detach().cpu().clone()
     if use_supervised:
+        helper_device = torch.device(env.unwrapped.device)
         supervised_helper = SupervisedEvalHelper(
             model=supervised_model,
             demo_context=demo_context,
-            device=torch.device(env.unwrapped.device),
+            device=helper_device,
             obs_keys=supervised_obs_keys,
         )
         if args_cli.supervised_open_loop:
             supervised_helper = SupervisedOpenLoopEvalHelper(
                 model=supervised_model,
                 demo_context=demo_context,
-                device=torch.device(env.unwrapped.device),
+                device=helper_device,
                 obs_keys=supervised_obs_keys,
             )
+        _apply_grouped_supervised_context(
+            supervised_helper=supervised_helper,
+            demo_context=demo_context,
+            obs_keys=supervised_obs_keys,
+            num_context_trajs=args_cli.eval_num_context_trajs,
+            device=helper_device,
+        )
+        if args_cli.eval_num_context_trajs > 1:
+            print(
+                f"[INFO] Using grouped context eval with eval_num_context_trajs={args_cli.eval_num_context_trajs}."
+            )
+        if bool(supervised_model.cfg.input.include_current_trajectory):
+            print("[INFO] Supervised eval will append rollout prefix to context (include_current_trajectory=True).")
 
     # Wandb logging for eval (same kinds of metrics as train: reward, tracking error)
     wandb_run, _wandb_module = init_eval_wandb(
@@ -396,9 +432,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         task_name=args_cli.task or "",
     )
     tracking_term = get_tracking_metrics_term(manager_env) if manager_env else None
+    task_term = get_task_metrics_term(manager_env) if manager_env else None
     num_envs = env.unwrapped.num_envs
     eval_logger = (
-        EvalWandbLogger(wandb_run) if wandb_run is not None and tracking_term is not None else None
+        EvalWandbLogger(wandb_run)
+        if wandb_run is not None and (tracking_term is not None or task_term is not None)
+        else None
     )
 
     total_env_steps = 0
@@ -412,7 +451,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         with torch.inference_mode():
             # agent stepping
             if args_cli.replay_demo_actions:
-                actions = _get_replay_actions(demo_context, manager_env)
+                actions = get_replay_actions(
+                    demo_context=demo_context,
+                    num_envs=manager_env.num_envs,
+                    episode_length_buf=manager_env.episode_length_buf,
+                )
             elif use_supervised:
                 actions = supervised_helper.act(previous_obs, rollout_storage)
             else:
@@ -421,8 +464,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             obs, rewards, dones, _ = env.step(actions)
             total_env_steps += num_envs
 
-            if eval_logger is not None and tracking_term is not None:
-                eval_logger.log_step(tracking_term, total_env_steps)
+            if eval_logger is not None:
+                eval_logger.log_step(tracking_term, total_env_steps, task_term=task_term)
 
             policy_obs = previous_obs["policy"]
             if isinstance(previous_obs, Mapping):
@@ -431,7 +474,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 debug_obs = None
             if debug_obs is None and isinstance(obs_buf, Mapping):
                 debug_obs = obs_buf.get("debug")
-            debug_flat = _flatten_debug_obs(debug_obs)
+            debug_flat = flatten_debug_obs(debug_obs)
             if isinstance(policy_obs, Mapping):
                 rollout_obs = {**policy_obs, **debug_flat} if debug_flat else policy_obs
             elif debug_flat:
@@ -473,7 +516,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 rollout_storage.wipe_envs(done_env_ids)
                 if use_supervised:
                     supervised_helper.refresh_envs(done_env_ids)
-                _update_demo_snapshot(demo_context, done_env_ids, demo_obs_snapshot, demo_lengths_snapshot)
+                    _apply_grouped_supervised_context(
+                        supervised_helper=supervised_helper,
+                        demo_context=demo_context,
+                        obs_keys=supervised_obs_keys,
+                        num_context_trajs=args_cli.eval_num_context_trajs,
+                        device=helper_device,
+                        env_ids=done_env_ids,
+                    )
+                update_demo_snapshot(demo_context, done_env_ids, demo_obs_snapshot, demo_lengths_snapshot)
                 demo_indices[done_env_ids] = demo_context.episode_indices[done_env_ids]
             previous_obs = obs
         if args_cli.video:
@@ -495,6 +546,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env.close()
     if eval_logger is not None:
         eval_logger.finish()
+    save_rollout_visualizations(rollout_dir)
 
 
 if __name__ == "__main__":

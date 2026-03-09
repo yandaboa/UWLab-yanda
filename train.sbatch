@@ -17,8 +17,9 @@ HIDDEN_DIM="$2"
 NUM_LAYERS="$3"
 NUM_HEADS="$4"
 DROPOUT="$5"
-RUN_NAME="$6"
-DATASET_GROUP="$7"
+LEARNING_RATE="$6"
+RUN_NAME="$7"
+DATASET_GROUP="$8"
 
 set -e
 set -o pipefail
@@ -30,7 +31,7 @@ conda activate uwlab
 cd /gscratch/weirdlab/yanda/lti/UWLab-yanda
 
 echo "RUN_NAME=$RUN_NAME"
-echo "seed=$SEED hidden_dim=$HIDDEN_DIM num_layers=$NUM_LAYERS num_heads=$NUM_HEADS dropout=$DROPOUT"
+echo "seed=$SEED hidden_dim=$HIDDEN_DIM num_layers=$NUM_LAYERS num_heads=$NUM_HEADS dropout=$DROPOUT learning_rate=$LEARNING_RATE"
 echo "dataset_group=$DATASET_GROUP"
 
 python -u scripts/reinforcement_learning/rsl_rl/train_supervised_context.py \
@@ -41,5 +42,6 @@ python -u scripts/reinforcement_learning/rsl_rl/train_supervised_context.py \
   model.embedding_dropout="$DROPOUT" \
   model.attention_dropout="$DROPOUT" \
   model.residual_dropout="$DROPOUT" \
+  optim.learning_rate="$LEARNING_RATE" \
   data.train_episode_paths="$DATASET_GROUP" \
   logging.run_name="$RUN_NAME"

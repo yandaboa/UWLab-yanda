@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import glob
-import os
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -42,6 +41,13 @@ def _expand_inputs(inputs: Iterable[str]) -> list[Path]:
 def _normalize_episodes(data: Any) -> list[dict[str, Any]]:
     if isinstance(data, dict) and "episodes" in data:
         return list(data.get("episodes") or [])
+    if isinstance(data, dict) and "episode_groups" in data:
+        groups = data.get("episode_groups") or []
+        episodes: list[dict[str, Any]] = []
+        for group in groups:
+            if isinstance(group, list):
+                episodes.extend(group)
+        return episodes
     if isinstance(data, list):
         return list(data)
     if isinstance(data, dict):
@@ -180,6 +186,15 @@ def subset_episodes(
     suffix = f"_subset_{num_episodes}"
     for path in paths:
         data = torch.load(path, map_location="cpu")
+        if isinstance(data, dict) and "episode_groups" in data:
+            groups = list(data.get("episode_groups") or [])
+            subset_groups = groups[:num_episodes]
+            new_data = dict(data)
+            new_data["episode_groups"] = subset_groups
+            out_path = _output_path(path, output_dir, suffix)
+            torch.save(new_data, out_path)
+            print(f"[INFO] Wrote {out_path} (groups: {len(subset_groups)}/{len(groups)})")
+            continue
         episodes = _normalize_episodes(data)
         subset = episodes[:num_episodes]
         if isinstance(data, dict) and "episodes" in data:
@@ -203,6 +218,23 @@ def random_subset_episodes(
     suffix = "_subsetx"
     for path in paths:
         data = torch.load(path, map_location="cpu")
+        if isinstance(data, dict) and "episode_groups" in data:
+            groups = list(data.get("episode_groups") or [])
+            total = len(groups)
+            if total == 0:
+                subset_groups: list[list[dict[str, Any]]] = []
+            else:
+                keep = min(num_episodes, total)
+                generator = torch.Generator().manual_seed(seed)
+                perm = torch.randperm(total, generator=generator).tolist()
+                subset_indices = perm[:keep]
+                subset_groups = [groups[i] for i in subset_indices]
+            new_data = dict(data)
+            new_data["episode_groups"] = subset_groups
+            out_path = _output_path(path, output_dir, suffix)
+            torch.save(new_data, out_path)
+            print(f"[INFO] Wrote {out_path} (groups: {len(subset_groups)}/{len(groups)})")
+            continue
         episodes = _normalize_episodes(data)
         total = len(episodes)
         if total == 0:
@@ -224,44 +256,134 @@ def random_subset_episodes(
 
 
 def split_episodes_train_val(
-    path: Path,
+    paths: Iterable[Path],
     output_dir: Path | None,
     val_fraction: float = 0.05,
-) -> tuple[Path, Path]:
+    seed: int = 0,
+) -> None:
     if not 0.0 < val_fraction < 1.0:
         raise ValueError("val_fraction must be in (0, 1).")
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
-    data = torch.load(path, map_location="cpu")
-    episodes = _normalize_episodes(data)
-    if len(episodes) < 2:
-        raise ValueError("Need at least two episodes to create a train/val split.")
-    generator = torch.Generator().manual_seed(0)
-    perm = torch.randperm(len(episodes), generator=generator)
-    num_val = max(1, int(len(episodes) * val_fraction))
-    val_indices = perm[:num_val].tolist()
-    train_indices = perm[num_val:].tolist()
-    train_episodes = [episodes[i] for i in train_indices]
-    val_episodes = [episodes[i] for i in val_indices]
-    train_path = _output_path(path, output_dir, "_train")
-    val_path = _output_path(path, output_dir, "_val")
-    if isinstance(data, dict) and "episodes" in data:
-        train_data = dict(data)
-        train_data["episodes"] = train_episodes
-        val_data = dict(data)
-        val_data["episodes"] = val_episodes
-    else:
-        train_data = {"episodes": train_episodes}
-        val_data = {"episodes": val_episodes}
-    torch.save(train_data, train_path)
-    torch.save(val_data, val_path)
-    print(
-        f"[INFO] Wrote {train_path} (episodes: {len(train_episodes)}/{len(episodes)})"
-    )
-    print(
-        f"[INFO] Wrote {val_path} (episodes: {len(val_episodes)}/{len(episodes)})"
-    )
-    return train_path, val_path
+    for path in paths:
+        data = torch.load(path, map_location="cpu")
+        train_path = _output_path(path, output_dir, "_train")
+        val_path = _output_path(path, output_dir, "_val")
+
+        if isinstance(data, dict) and "episode_groups" in data:
+            episode_groups = list(data.get("episode_groups") or [])
+            num_groups = len(episode_groups)
+            if num_groups < 2:
+                raise ValueError("Need at least two episode groups to create a train/val split.")
+            generator = torch.Generator().manual_seed(seed)
+            perm = torch.randperm(num_groups, generator=generator)
+            num_val = max(1, int(num_groups * val_fraction))
+            val_indices = perm[:num_val].tolist()
+            train_indices = perm[num_val:].tolist()
+            train_groups = [episode_groups[i] for i in train_indices]
+            val_groups = [episode_groups[i] for i in val_indices]
+
+            train_data = dict(data)
+            val_data = dict(data)
+            train_data["episode_groups"] = train_groups
+            val_data["episode_groups"] = val_groups
+
+            group_splines = data.get("group_splines")
+            if isinstance(group_splines, list) and len(group_splines) == num_groups:
+                train_data["group_splines"] = [group_splines[i] for i in train_indices]
+                val_data["group_splines"] = [group_splines[i] for i in val_indices]
+
+            train_data["num_episodes"] = sum(len(group) for group in train_groups)
+            val_data["num_episodes"] = sum(len(group) for group in val_groups)
+
+            torch.save(train_data, train_path)
+            torch.save(val_data, val_path)
+            print(
+                f"[INFO] Wrote {train_path} (groups: {len(train_groups)}/{num_groups}, "
+                f"episodes: {train_data['num_episodes']})"
+            )
+            print(
+                f"[INFO] Wrote {val_path} (groups: {len(val_groups)}/{num_groups}, "
+                f"episodes: {val_data['num_episodes']})"
+            )
+            continue
+
+        episodes = _normalize_episodes(data)
+        if len(episodes) < 2:
+            raise ValueError("Need at least two episodes to create a train/val split.")
+        generator = torch.Generator().manual_seed(seed)
+        perm = torch.randperm(len(episodes), generator=generator)
+        num_val = max(1, int(len(episodes) * val_fraction))
+        val_indices = perm[:num_val].tolist()
+        train_indices = perm[num_val:].tolist()
+        train_episodes = [episodes[i] for i in train_indices]
+        val_episodes = [episodes[i] for i in val_indices]
+        if isinstance(data, dict) and "episodes" in data:
+            train_data = dict(data)
+            train_data["episodes"] = train_episodes
+            val_data = dict(data)
+            val_data["episodes"] = val_episodes
+        else:
+            train_data = {"episodes": train_episodes}
+            val_data = {"episodes": val_episodes}
+        torch.save(train_data, train_path)
+        torch.save(val_data, val_path)
+        print(
+            f"[INFO] Wrote {train_path} (episodes: {len(train_episodes)}/{len(episodes)})"
+        )
+        print(
+            f"[INFO] Wrote {val_path} (episodes: {len(val_episodes)}/{len(episodes)})"
+        )
+
+
+def grouped_to_episode_subset(
+    paths: Iterable[Path],
+    output_dir: Path | None,
+    episodes_per_group: int,
+) -> None:
+    """Convert grouped datasets into flat episode datasets.
+
+    For each group in `episode_groups`, keep up to `episodes_per_group` episodes
+    (from the start of each group), flatten them across groups, and save as
+    `{ "episodes": [...] }` while preserving non-group metadata.
+    """
+    if episodes_per_group <= 0:
+        raise ValueError("episodes_per_group must be a positive integer.")
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = f"_episodes_from_groups_{episodes_per_group}"
+    for path in paths:
+        data = torch.load(path, map_location="cpu")
+        if not (isinstance(data, dict) and "episode_groups" in data):
+            raise ValueError(
+                f"Input file {path} is not in grouped format (missing 'episode_groups')."
+            )
+
+        groups = data.get("episode_groups") or []
+        if not isinstance(groups, list):
+            raise ValueError(f"Expected 'episode_groups' to be a list in {path}.")
+
+        episodes: list[dict[str, Any]] = []
+        for group_idx, group in enumerate(groups):
+            if not isinstance(group, list):
+                raise ValueError(f"Expected group {group_idx} in {path} to be a list.")
+            keep = min(episodes_per_group, len(group))
+            episodes.extend(group[:keep])
+
+        new_data = dict(data)
+        new_data.pop("episode_groups", None)
+        new_data.pop("group_splines", None)
+        new_data["episodes"] = episodes
+        new_data["num_episodes"] = len(episodes)
+
+        out_path = _output_path(path, output_dir, suffix)
+        torch.save(new_data, out_path)
+        print(
+            f"[INFO] Wrote {out_path} "
+            f"(groups: {len(groups)}, episodes_per_group: {episodes_per_group}, "
+            f"episodes: {len(episodes)})"
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -285,12 +407,22 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument(
         "--subset-episodes",
         action="store_true",
-        help="Write a dataset with only the first N episodes.",
+        help="Write a dataset with only the first N episodes (or episode groups when grouped input is used).",
     )
     mode.add_argument(
         "--random-subset-episodes",
         action="store_true",
-        help="Write a dataset with N randomly sampled episodes using postfix _subsetx.",
+        help="Write a dataset with N randomly sampled episodes/groups using postfix _subsetx.",
+    )
+    mode.add_argument(
+        "--split-train-val",
+        action="store_true",
+        help="Split each input dataset into train/val files (supports both episodes and episode_groups).",
+    )
+    mode.add_argument(
+        "--groups-to-episodes",
+        action="store_true",
+        help="Convert grouped dataset files to flat episode files by taking N episodes per group.",
     )
     parser.add_argument(
         "--output-dir",
@@ -314,13 +446,25 @@ def parse_args() -> argparse.Namespace:
         "--num-episodes",
         type=int,
         default=None,
-        help="Number of episodes to keep when creating a subset.",
+        help="Number of episodes/groups to keep when creating a subset.",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=0,
         help="Random seed used for random subset sampling.",
+    )
+    parser.add_argument(
+        "--val-fraction",
+        type=float,
+        default=0.05,
+        help="Validation fraction used for --split-train-val.",
+    )
+    parser.add_argument(
+        "--episodes-per-group",
+        type=int,
+        default=None,
+        help="Number of episodes to keep from each group when using --groups-to-episodes.",
     )
     return parser.parse_args()
 
@@ -343,6 +487,12 @@ def main() -> None:
         if args.num_episodes is None or args.num_episodes <= 0:
             raise ValueError("--num-episodes must be a positive integer when using --random-subset-episodes.")
         random_subset_episodes(paths, output_dir, args.num_episodes, args.seed)
+    elif args.split_train_val:
+        split_episodes_train_val(paths, output_dir, args.val_fraction, args.seed)
+    elif args.groups_to_episodes:
+        if args.episodes_per_group is None or args.episodes_per_group <= 0:
+            raise ValueError("--episodes-per-group must be a positive integer when using --groups-to-episodes.")
+        grouped_to_episode_subset(paths, output_dir, args.episodes_per_group)
 
 
 if __name__ == "__main__":
