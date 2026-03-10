@@ -1,0 +1,75 @@
+data:
+  train_episode_paths:
+    - episodes/20260303_034130/episodes_000001_trim_episodes_from_groups_6.pt
+    - episodes/20260303_034130/episodes_000002_trim_episodes_from_groups_6.pt
+    - episodes/20260303_034130/episodes_000003_trim_episodes_from_groups_6.pt
+    - episodes/20260303_034130/episodes_000004_trim_episodes_from_groups_6.pt
+    - episodes/20260303_034130/episodes_000005_trim_episodes_from_groups_6.pt
+    - episodes/20260303_034130/episodes_000006_trim_episodes_from_groups_6.pt
+    - episodes/20260303_034130/episodes_000007_trim_episodes_from_groups_6.pt
+    - episodes/20260303_034130/episodes_000008_trim_episodes_from_groups_6.pt
+  validation_episode_paths:
+    - episodes/20260303_034130/episodes_000000_trim_episodes_from_groups_6.pt
+  episode_paths: []
+  obs_keys:
+    - joint_pos
+    - end_effector_pose
+    - insertive_asset_pose
+    - receptive_asset_pose
+    - insertive_asset_in_receptive_asset_frame
+  max_context_length: null
+  num_context_episodes: 2
+  minimum_num_context_trajs: 2
+  batch_size: 64
+  num_workers: 4
+  shuffle: true
+  train_on_data_augs: false
+
+model:
+  num_actions: 7
+  action_distribution: normal
+  action_discretization_spec_path: ""
+  normalize_action_targets: true
+  action_norm_num_batches: 32
+  action_norm_min_std: 1.0e-6
+  context_token_layout: merged
+  include_actions_in_context: false
+  include_rewards_in_context: false
+  share_current_and_context_obs_projection: true
+  encoding_projection_hidden_dim: null
+  embedding_dim: 256
+  hidden_dim: 512
+  num_layers: 6
+  num_heads: 4
+  embedding_dropout: 0.2
+  attention_dropout: 0.2
+  residual_dropout: 0.2
+
+optim:
+  num_steps: 150000
+  learning_rate: 1.0e-4
+  weight_decay: 0.0
+  betas: [0.9, 0.99]
+  eps: 1.0e-8
+  max_grad_norm: 1.0
+  optimizer_class: AdamW
+  lr_warmup_steps: 200
+  lr_schedule: cosine_annealing_with_warmup
+  use_amp: true
+  grad_accumulation_steps: 4
+
+input:
+  include_current_trajectory: false
+
+distributed:
+  distributed: false
+
+logging:
+  experiment_name: supervised_context_pm
+  run_name: "copying_fixed"
+  log_interval: 1
+  save_interval: 5000
+  log_project_name: null
+  use_wandb: true
+  val_interval: 1000
+  num_validation_steps: 1000
