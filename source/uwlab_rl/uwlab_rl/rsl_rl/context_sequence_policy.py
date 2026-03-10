@@ -62,6 +62,11 @@ class ContextSequencePolicy(nn.Module):
 
         self.action_bins = action_bins
         self.action_bin_values = action_bin_values
+        context_cap = int(cfg.data.max_context_length) if cfg.data.max_context_length is not None else 100
+        if self.layout == "state_action":
+            base_token_len = (2 * context_cap) + 1
+        else:
+            base_token_len = context_cap + 1
         action_distribution = cfg.model.action_distribution
         if action_distribution == "categorical":
             assert action_bins is not None and len(action_bins) > 0, (
@@ -78,7 +83,7 @@ class ContextSequencePolicy(nn.Module):
                 hidden_dim=cfg.model.hidden_dim,
                 num_layers=cfg.model.num_layers,
                 num_heads=cfg.model.num_heads,
-                max_len=101 + cfg.model.num_actions,
+                max_len=base_token_len + cfg.model.num_actions,
                 attention_dropout=cfg.model.attention_dropout,
                 residual_dropout=cfg.model.residual_dropout,
                 embedding_dropout=cfg.model.embedding_dropout,
@@ -95,7 +100,7 @@ class ContextSequencePolicy(nn.Module):
                 hidden_dim=cfg.model.hidden_dim,
                 num_layers=cfg.model.num_layers,
                 num_heads=cfg.model.num_heads,
-                max_len=101,
+                max_len=base_token_len,
                 attention_dropout=cfg.model.attention_dropout,
                 residual_dropout=cfg.model.residual_dropout,
                 embedding_dropout=cfg.model.embedding_dropout,
@@ -113,7 +118,7 @@ class ContextSequencePolicy(nn.Module):
                 hidden_dim=cfg.model.hidden_dim,
                 num_layers=cfg.model.num_layers,
                 num_heads=cfg.model.num_heads,
-                max_len=101,
+                max_len=base_token_len,
                 attention_dropout=cfg.model.attention_dropout,
                 residual_dropout=cfg.model.residual_dropout,
                 embedding_dropout=cfg.model.embedding_dropout,

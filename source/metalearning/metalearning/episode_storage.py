@@ -16,12 +16,25 @@ class EpisodeStorage:
         max_num_episodes: int,
         save_dir: Optional[str] = None,
         file_prefix: str = "episodes",
+        num_similar_trajectories: int | None = None,
     ) -> None:
         """Initialize episode storage."""
         self.max_num_episodes = max_num_episodes
         self.save_dir = save_dir
         self.file_prefix = file_prefix
+        parsed_num_similar_trajectories = (
+            int(num_similar_trajectories) if num_similar_trajectories is not None else None
+        )
+        if parsed_num_similar_trajectories is not None:
+            assert parsed_num_similar_trajectories > 0, "num_similar_trajectories must be positive."
+            self.num_similar_trajectories = (
+                parsed_num_similar_trajectories if parsed_num_similar_trajectories > 1 else None
+            )
+        else:
+            self.num_similar_trajectories = None
         self.episodes: list[Dict[str, torch.Tensor | Dict[str, torch.Tensor] | int | None]] = []
+        self.episode_groups: list[list[Dict[str, torch.Tensor | Dict[str, torch.Tensor] | int | None]]] = []
+        self._pending_episode_groups_by_env: dict[int, list[Dict[str, torch.Tensor | Dict[str, torch.Tensor] | int | None]]] = {}
         self.save_index = 0
         self.total_episodes = 0
         self.saved_episodes = 0
@@ -73,9 +86,9 @@ class EpisodeStorage:
                 episode["raw_states"] = self._slice_env_data(raw_states, rollout_idx)
             if success is not None:
                 episode["success"] = self._slice_env_data(success, rollout_idx)
-            self.episodes.append(episode)
+            self._append_episode(episode, env_id)
             self.total_episodes += 1
-            if len(self.episodes) >= self.max_num_episodes:
+            if self._num_buffered_episodes() >= self.max_num_episodes:
                 if self.save_dir is None:
                     raise RuntimeError("save_dir must be set to flush episodes.")
                 self.save(self.save_dir)
@@ -85,17 +98,30 @@ class EpisodeStorage:
         os.makedirs(save_dir, exist_ok=True)
         filename = f"{self.file_prefix}_{self.save_index:06d}.pt"
         save_path = os.path.join(save_dir, filename)
-        torch.save({"episodes": self.episodes}, save_path)
-        self.saved_episodes += len(self.episodes)
+        payload = self._build_save_payload(include_partial_groups=False)
+        torch.save(payload, save_path)
+        self.saved_episodes += int(payload["num_episodes"])
         self.episodes = []
+        self.episode_groups = []
         self.save_index += 1
         return save_path
-    
+
     def force_save(self) -> None:
         """Force save current episodes to disk and clear the buffer."""
         if self.save_dir is None:
             raise RuntimeError("save_dir must be set to flush episodes.")
-        self.save(self.save_dir)
+        if self._num_buffered_episodes() == 0 and not self._pending_episode_groups_by_env:
+            return
+        os.makedirs(self.save_dir, exist_ok=True)
+        filename = f"{self.file_prefix}_{self.save_index:06d}.pt"
+        save_path = os.path.join(self.save_dir, filename)
+        payload = self._build_save_payload(include_partial_groups=True)
+        torch.save(payload, save_path)
+        self.saved_episodes += int(payload["num_episodes"])
+        self.episodes = []
+        self.episode_groups = []
+        self._pending_episode_groups_by_env.clear()
+        self.save_index += 1
 
     def _normalize_env_ids(
         self, env_ids: Optional[Iterable[int] | torch.Tensor], num_episodes: int
@@ -115,3 +141,38 @@ class EpisodeStorage:
         if isinstance(data, list):
             return data[rollout_idx]
         return data
+
+    def _append_episode(
+        self,
+        episode: Dict[str, torch.Tensor | Dict[str, torch.Tensor] | int | None],
+        env_id: Optional[int],
+    ) -> None:
+        if self.num_similar_trajectories is None:
+            self.episodes.append(episode)
+            return
+        assert env_id is not None, "Grouped episode storage requires env_id."
+        current_group = self._pending_episode_groups_by_env.setdefault(env_id, [])
+        current_group.append(episode)
+        if len(current_group) >= self.num_similar_trajectories:
+            self.episode_groups.append(current_group.copy())
+            self._pending_episode_groups_by_env[env_id] = []
+
+    def _num_buffered_episodes(self) -> int:
+        if self.num_similar_trajectories is None:
+            return len(self.episodes)
+        return sum(len(group) for group in self.episode_groups)
+
+    def _build_save_payload(self, include_partial_groups: bool) -> dict[str, Any]:
+        if self.num_similar_trajectories is None:
+            return {"episodes": self.episodes, "num_episodes": len(self.episodes)}
+        episode_groups = list(self.episode_groups)
+        if include_partial_groups:
+            for group in self._pending_episode_groups_by_env.values():
+                if group:
+                    episode_groups.append(group.copy())
+        num_episodes = sum(len(group) for group in episode_groups)
+        return {
+            "episode_groups": episode_groups,
+            "num_episodes": num_episodes,
+            "num_similar_trajectories": self.num_similar_trajectories,
+        }
