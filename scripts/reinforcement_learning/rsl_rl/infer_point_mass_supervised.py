@@ -59,6 +59,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--wandb-project", type=str, default="point_mass_supervised_inference")
+    parser.add_argument("--wandb-run-name", type=str, default=None)
     parser.add_argument(
         "--open-loop",
         action="store_true",
@@ -74,6 +76,26 @@ def parse_args() -> argparse.Namespace:
         help="Output .pt path for inferred rollouts. Defaults to checkpoint directory when unset.",
     )
     return parser.parse_args()
+
+
+def _init_wandb(args: argparse.Namespace, checkpoint_path: Path) -> Any | None:
+    try:
+        import wandb  # type: ignore
+    except ImportError:
+        return None
+    run_name = args.wandb_run_name or f"infer_{checkpoint_path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    return wandb.init(
+        project=args.wandb_project,
+        name=run_name,
+        config={
+            "checkpoint": str(checkpoint_path),
+            "context_path": args.context_path,
+            "task": args.task,
+            "num_episodes": args.num_episodes,
+            "open_loop": bool(args.open_loop),
+            "num_context_trajs": args.num_context_trajs,
+        },
+    )
 
 
 def _load_grouped_payload(
@@ -205,6 +227,7 @@ def main() -> None:
     checkpoint = torch.load(args.checkpoint, map_location=device)
     model, meta = ContextSequencePolicy.from_checkpoint(checkpoint, device=device)
     model.eval()
+    wandb_run = _init_wandb(args, checkpoint_path)
     obs_keys = list(model.cfg.data.obs_keys or [])
     reward_dim = int(meta["reward_dim"])
 
@@ -352,11 +375,29 @@ def main() -> None:
                 "length": len(action_log),
                 "total_reward": total_reward,
             }
+            final_pos_l2_error = None
+            if group_spline is not None:
+                spline_obs = group_spline.get("obs") if isinstance(group_spline, dict) else None
+                if isinstance(spline_obs, dict) and "position" in spline_obs:
+                    true_final_position = np.asarray(spline_obs["position"][-1], dtype=np.float32).reshape(-1)
+                    rollout_final_position = np.asarray(env.physics.position(), dtype=np.float32).reshape(-1)
+                    final_pos_l2_error = float(np.linalg.norm(rollout_final_position - true_final_position, ord=2))
+                    rollout["final_position_l2_error"] = final_pos_l2_error
+                    if wandb_run is not None:
+                        wandb_run.log(
+                            {
+                                "eval/final_position_l2_error": final_pos_l2_error,
+                                "eval/episode_idx": episode_idx,
+                                "eval/group_idx": group_idx,
+                            }
+                        )
             all_rollouts.append(rollout)
             print(
                 f"[EP {episode_idx:03d}] group={group_idx} "
                 f"context_ids={selected_idxs} length={rollout['length']} total_reward={total_reward:.4f}"
             )
+            if final_pos_l2_error is not None:
+                print(f"         final_position_l2_error={final_pos_l2_error:.6f}")
 
     out_path = Path(args.save_rollouts_path).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -372,6 +413,25 @@ def main() -> None:
 
     mean_return = float(np.mean([ep["total_reward"] for ep in all_rollouts])) if all_rollouts else 0.0
     print(f"[DONE] Ran {len(all_rollouts)} episodes. Mean return: {mean_return:.4f}")
+    valid_l2_errors = [
+        float(ep["final_position_l2_error"])
+        for ep in all_rollouts
+        if isinstance(ep, dict) and "final_position_l2_error" in ep
+    ]
+    if valid_l2_errors:
+        mean_final_pos_l2_error = float(np.mean(valid_l2_errors))
+        print(f"[DONE] Mean final_position_l2_error: {mean_final_pos_l2_error:.6f}")
+        if wandb_run is not None:
+            wandb_run.log(
+                {
+                    "eval/mean_return": mean_return,
+                    "eval/mean_final_position_l2_error": mean_final_pos_l2_error,
+                }
+            )
+    elif wandb_run is not None:
+        wandb_run.log({"eval/mean_return": mean_return})
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 if __name__ == "__main__":
