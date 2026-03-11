@@ -1,0 +1,22 @@
+dataset:
+  path: /home/ubuntu/lti/UWLab-ICL/supervised_dataset.pt
+
+model:
+  hidden_dims: [512, 256, 128, 64]
+  log_std_min: -5.0
+  log_std_max: 2.0
+
+training:
+  output_dir: logs/rsl_rl/supervised
+  learning_rate: 3e-4
+  weight_decay: 0.0
+  batch_size: 2048
+  epochs: 300
+  val_split: 0.1
+  num_workers: 4
+  seed: 42
+  save_every_epochs: 5
+  save_last: true
+  use_wandb: true
+  wandb_project: supervised_gaussian_policy
+  wandb_run_name: first
