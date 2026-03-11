@@ -32,6 +32,9 @@ OUTPUT_ROOT = LOGS_ROOT / "batch_eval_outputs"
 # - Every model runs with every context path (Cartesian product).
 # -----------------------------------------------------------------------------
 MODEL_NAMES: List[str] = [
+    "2026-03-10_10-02-43",
+    "2026-03-10_10-02-20",
+    "2026-03-10_09-59-47",
     "pm_sweep_0_seed1_hd64_L6_H4_do0.2_lr1e-4_wd0.0_ictfalse",
     "pm_sweep_0_seed1_hd64_L6_H4_do0.2_lr1e-4_wd0.0_icttrue",
     "pm_sweep_0_seed1_hd64_L8_H4_do0.2_lr1e-4_wd0.0_ictfalse",
@@ -66,7 +69,7 @@ MODEL_NAMES: List[str] = [
     # "2026-03-10_12-30-00",
 ]
 CONTEXT_PATHS: List[str] = [
-    # "/home/ubuntu/lti/dm_control/datasets/pm_lower_freq_train.pt",
+    "/home/ubuntu/lti/dm_control/datasets/pm_lower_freq_train.pt",
     "/home/ubuntu/lti/dm_control/datasets/pm_lower_freq_val.pt",
 ]
 
@@ -80,7 +83,7 @@ CUDA_DEVICE_IDS: List[str] = [
 ]
 
 TASK = "easy"
-NUM_EPISODES = 50
+NUM_EPISODES = 250
 TIME_LIMIT_SEC = 5.0
 MAX_STEPS: int | None = None
 GROUP_INDEX = -1
@@ -183,7 +186,7 @@ def _build_jobs(args: argparse.Namespace) -> List[JobSpec]:
                     run_log=per_job_dir / f"run_ckpt_{args.checkpoint_num}.log",
                     closed_out=per_job_dir / f"rollouts_ckpt_{args.checkpoint_num}_closed.pt",
                     open_out=per_job_dir / f"rollouts_ckpt_{args.checkpoint_num}_open.pt",
-                    seed=args.seed + len(jobs),
+                    seed=args.seed,
                     device=assigned_device,
                     gpu_slot=gpu_slot,
                 )

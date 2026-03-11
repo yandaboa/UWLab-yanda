@@ -263,6 +263,20 @@ def _obs_dict_to_vector(obs_dict: dict[str, Any], obs_keys: list[str], index: in
     return np.concatenate(parts, axis=0).astype(np.float32, copy=False)
 
 
+def _compute_dtw_sqeuclidean_cost(
+    reference_positions: np.ndarray,
+    rollout_positions: np.ndarray,
+) -> float:
+    """Compute DTW cumulative sqeuclidean cost between 2 position trajectories."""
+    from tslearn.metrics import dtw_path_from_metric
+
+    ref = np.asarray(reference_positions, dtype=np.float32).reshape(-1, 2)
+    pred = np.asarray(rollout_positions, dtype=np.float32).reshape(-1, 2)
+    assert ref.shape[0] > 0 and pred.shape[0] > 0, "DTW requires non-empty trajectories."
+    _, cost = dtw_path_from_metric(ref, pred, metric="sqeuclidean")
+    return float(cost)
+
+
 def _to_serializable(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
@@ -487,6 +501,7 @@ def main() -> None:
             obs_log: list[np.ndarray] = []
             action_log: list[np.ndarray] = []
             reward_log: list[float] = []
+            position_log: list[np.ndarray] = []
             prefix_obs_log: list[np.ndarray] = []
             prefix_action_log: list[np.ndarray] = []
             prefix_reward_log: list[float] = []
@@ -544,6 +559,7 @@ def main() -> None:
                         action_np = inferred_action_np
                         current_obs = _get_current_obs_vector(env, time_step, obs_keys)
                         obs_log.append(current_obs)
+                        position_log.append(np.asarray(env.physics.position(), dtype=np.float32).reshape(-1))
                         action_log.append(action_np)
                         time_step = env.step(action_np)
                         reward = 0.0 if time_step.reward is None else float(time_step.reward)
@@ -572,6 +588,7 @@ def main() -> None:
                     for i in range(spline_len):
                         current_obs = _get_current_obs_vector(env, time_step, obs_keys)
                         obs_log.append(current_obs)
+                        position_log.append(np.asarray(env.physics.position(), dtype=np.float32).reshape(-1))
                         action_np = planned_actions_np[i]
                         action_log.append(action_np)
                         time_step = env.step(action_np)
@@ -585,6 +602,7 @@ def main() -> None:
                     for i in range(spline_len):
                         current_obs = _get_current_obs_vector(env, time_step, obs_keys)
                         obs_log.append(current_obs)
+                        position_log.append(np.asarray(env.physics.position(), dtype=np.float32).reshape(-1))
                         action_np = spline_actions_np[i].astype(np.float32, copy=False)
                         spline_action_log.append(action_np)
                         action_log.append(action_np)
@@ -599,6 +617,7 @@ def main() -> None:
                 while True:
                     current_obs = _get_current_obs_vector(env, time_step, obs_keys)
                     obs_log.append(current_obs)
+                    position_log.append(np.asarray(env.physics.position(), dtype=np.float32).reshape(-1))
                     current_obs_tensor = torch.from_numpy(current_obs).unsqueeze(0).to(device)
                     if include_current_trajectory:
                         prefix_obs = torch.from_numpy(np.asarray(prefix_obs_log, dtype=np.float32)).reshape(-1, current_obs.shape[0])
@@ -673,21 +692,22 @@ def main() -> None:
                 rollout["open_loop_inferred_actions"] = np.stack(inferred_action_log[:compare_len], axis=0)
                 rollout["open_loop_spline_actions"] = np.stack(spline_action_log[:compare_len], axis=0)
             final_pos_l2_error = None
+            dtw_position_sqeuclidean = None
             if group_spline is not None:
                 spline_obs = group_spline.get("obs") if isinstance(group_spline, dict) else None
                 if isinstance(spline_obs, dict) and "position" in spline_obs:
-                    true_final_position = np.asarray(spline_obs["position"][-1], dtype=np.float32).reshape(-1)
+                    true_positions = np.asarray(spline_obs["position"], dtype=np.float32).reshape(-1, 2)
+                    true_final_position = np.asarray(true_positions[-1], dtype=np.float32).reshape(-1)
                     rollout_final_position = np.asarray(env.physics.position(), dtype=np.float32).reshape(-1)
                     final_pos_l2_error = float(np.linalg.norm(rollout_final_position - true_final_position, ord=2))
                     rollout["final_position_l2_error"] = final_pos_l2_error
-                    if wandb_run is not None:
-                        wandb_run.log(
-                            {
-                                "eval/final_position_l2_error": final_pos_l2_error,
-                                "eval/episode_idx": episode_idx,
-                                "eval/group_idx": group_idx,
-                            }
+                    rollout_positions = np.asarray(position_log, dtype=np.float32).reshape(-1, 2)
+                    if rollout_positions.shape[0] > 0 and true_positions.shape[0] > 0:
+                        dtw_position_sqeuclidean = _compute_dtw_sqeuclidean_cost(
+                            reference_positions=true_positions,
+                            rollout_positions=rollout_positions,
                         )
+                        rollout["dtw_position_sqeuclidean"] = dtw_position_sqeuclidean
             all_rollouts.append(rollout)
             print(
                 f"[EP {episode_idx:03d}] group={group_idx} "
@@ -695,6 +715,8 @@ def main() -> None:
             )
             if final_pos_l2_error is not None:
                 print(f"         final_position_l2_error={final_pos_l2_error:.6f}")
+            if dtw_position_sqeuclidean is not None:
+                print(f"         dtw_position_sqeuclidean={dtw_position_sqeuclidean:.6f}")
 
     out_path = Path(args.save_rollouts_path).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -719,28 +741,25 @@ def main() -> None:
 
     mean_return = float(np.mean([ep["total_reward"] for ep in all_rollouts])) if all_rollouts else 0.0
     if wandb_run is not None:
-        wandb_run.log({"eval/num_rollouts": len(all_rollouts), "eval/save_rollouts_path": str(out_path)})
         if plot_dir is not None:
             wandb_run.log({"eval/plots_dir": str(plot_dir)})
         if action_plot_dir is not None:
             wandb_run.log({"eval/open_loop_action_plots_dir": str(action_plot_dir)})
         if plot_images:
-            selected_images = plot_images
-            if selected_images:
-                try:
-                    import wandb  # type: ignore
-                except ImportError:
-                    wandb = None
-                if wandb is not None:
-                    wandb_api: Any = wandb
-                    wandb_run.log(
-                        {
-                            "eval/rollout_plots": [
-                                wandb_api.Image(str(image_path), caption=image_path.name)
-                                for image_path in selected_images
-                            ]
-                        }
-                    )
+            try:
+                import wandb  # type: ignore
+            except ImportError:
+                wandb = None
+            if wandb is not None:
+                wandb_api: Any = wandb
+                wandb_run.log(
+                    {
+                        "eval/rollout_plots": [
+                            wandb_api.Image(str(image_path), caption=image_path.name)
+                            for image_path in plot_images
+                        ]
+                    }
+                )
         if action_plot_images:
             try:
                 import wandb  # type: ignore
@@ -762,18 +781,21 @@ def main() -> None:
         for ep in all_rollouts
         if isinstance(ep, dict) and "final_position_l2_error" in ep
     ]
+    valid_dtw_costs = [
+        float(ep["dtw_position_sqeuclidean"])
+        for ep in all_rollouts
+        if isinstance(ep, dict) and "dtw_position_sqeuclidean" in ep
+    ]
     if valid_l2_errors:
         mean_final_pos_l2_error = float(np.mean(valid_l2_errors))
         print(f"[DONE] Mean final_position_l2_error: {mean_final_pos_l2_error:.6f}")
         if wandb_run is not None:
-            wandb_run.log(
-                {
-                    "eval/mean_return": mean_return,
-                    "eval/mean_final_position_l2_error": mean_final_pos_l2_error,
-                }
-            )
-    elif wandb_run is not None:
-        wandb_run.log({"eval/mean_return": mean_return})
+            wandb_run.log({"eval/mean_final_position_l2_error": mean_final_pos_l2_error})
+    if valid_dtw_costs:
+        mean_dtw_position_sqeuclidean = float(np.mean(valid_dtw_costs))
+        print(f"[DONE] Mean dtw_position_sqeuclidean: {mean_dtw_position_sqeuclidean:.6f}")
+        if wandb_run is not None:
+            wandb_run.log({"eval/mean_dtw_position_sqeuclidean": mean_dtw_position_sqeuclidean})
     if wandb_run is not None:
         wandb_run.finish()
 
