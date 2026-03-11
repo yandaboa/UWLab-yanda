@@ -81,6 +81,8 @@ def build_keep_mask(
     insertive_y_range: tuple[float, float],
     insertive_z_range: tuple[float, float],
     filter_mode: str,
+    invert_receptive: bool,
+    invert_insertive: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     try:
         rigid = payload["initial_state"]["rigid_object"]
@@ -99,16 +101,19 @@ def build_keep_mask(
     r_xyz = receptive_pose[:, :3]
     i_xyz = insertive_pose[:, :3]
 
-    receptive_ok = (
+    receptive_in = (
         in_range(r_xyz[:, 0], receptive_x_range)
         & in_range(r_xyz[:, 1], receptive_y_range)
         & in_range(r_xyz[:, 2], receptive_z_range)
     )
-    insertive_ok = (
+    insertive_in = (
         in_range(i_xyz[:, 0], insertive_x_range)
         & in_range(i_xyz[:, 1], insertive_y_range)
         & in_range(i_xyz[:, 2], insertive_z_range)
     )
+
+    receptive_ok = ~receptive_in if invert_receptive else receptive_in
+    insertive_ok = ~insertive_in if invert_insertive else insertive_in
     if filter_mode == "both":
         keep_mask = receptive_ok & insertive_ok
     elif filter_mode == "receptive":
@@ -156,6 +161,21 @@ def main() -> int:
         choices=["both", "receptive", "insertive"],
         help="Which object ranges to enforce: both, receptive-only, or insertive-only.",
     )
+    parser.add_argument(
+        "--invert",
+        action="store_true",
+        help="Flip both object filters: keep outside ranges for both receptive and insertive.",
+    )
+    parser.add_argument(
+        "--invert-receptive",
+        action="store_true",
+        help="Flip only receptive filter: keep receptive states outside receptive ranges.",
+    )
+    parser.add_argument(
+        "--invert-insertive",
+        action="store_true",
+        help="Flip only insertive filter: keep insertive states outside insertive ranges.",
+    )
     parser.add_argument("--receptive-x", type=float, nargs=2, default=None, metavar=("MIN", "MAX"))
     parser.add_argument("--receptive-y", type=float, nargs=2, default=None, metavar=("MIN", "MAX"))
     parser.add_argument("--receptive-z", type=float, nargs=2, default=None, metavar=("MIN", "MAX"))
@@ -178,6 +198,9 @@ def main() -> int:
     insertive_y_range = resolve_range(args.insertive_y, INSERTIVE_Y_RANGE)
     insertive_z_range = resolve_range(args.insertive_z, INSERTIVE_Z_RANGE)
 
+    invert_receptive = args.invert or args.invert_receptive
+    invert_insertive = args.invert or args.invert_insertive
+
     keep_mask, r_xyz, i_xyz = build_keep_mask(
         payload,
         receptive_x_range=receptive_x_range,
@@ -187,6 +210,8 @@ def main() -> int:
         insertive_y_range=insertive_y_range,
         insertive_z_range=insertive_z_range,
         filter_mode=args.filter_mode,
+        invert_receptive=invert_receptive,
+        invert_insertive=invert_insertive,
     )
     n_total = int(keep_mask.numel())
     keep_idx = torch.where(keep_mask)[0]
@@ -194,6 +219,14 @@ def main() -> int:
 
     print("Using ranges (inclusive):")
     print(f"  filter_mode={args.filter_mode}")
+    print(
+        "  invert_receptive="
+        f"{invert_receptive} ({'outside' if invert_receptive else 'inside'} receptive ranges kept)"
+    )
+    print(
+        "  invert_insertive="
+        f"{invert_insertive} ({'outside' if invert_insertive else 'inside'} insertive ranges kept)"
+    )
     print(f"  receptive x={receptive_x_range}, y={receptive_y_range}, z={receptive_z_range}")
     print(f"  insertive x={insertive_x_range}, y={insertive_y_range}, z={insertive_z_range}")
     summarize_xyz(r_xyz, "Input receptive")
@@ -205,7 +238,15 @@ def main() -> int:
         out_dir = os.path.join(tempfile.gettempdir(), "filtered_reset_states")
         os.makedirs(out_dir, exist_ok=True)
         stem = os.path.splitext(os.path.basename(args.input_pt))[0]
-        args.out = os.path.join(out_dir, f"{stem}_filtered_{n_keep}_of_{n_total}_{int(time.time())}.pt")
+        if invert_receptive and invert_insertive:
+            mode = "outside_both"
+        elif invert_receptive:
+            mode = "outside_receptive"
+        elif invert_insertive:
+            mode = "outside_insertive"
+        else:
+            mode = "inside"
+        args.out = os.path.join(out_dir, f"{stem}_filtered_{mode}_{n_keep}_of_{n_total}_{int(time.time())}.pt")
     else:
         out_dir = os.path.dirname(os.path.abspath(args.out))
         if out_dir:
