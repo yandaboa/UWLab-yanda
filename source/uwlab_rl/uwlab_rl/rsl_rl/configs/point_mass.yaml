@@ -1,8 +1,8 @@
 data:
   train_episode_paths:
-    - /gscratch/weirdlab/yanda/lti/dm_control/datasets/pm_lower_freq_train.pt
+    - /home/ubuntu/lti/dm_control/datasets/pm_lower_freq_train.pt
   validation_episode_paths:
-    - /gscratch/weirdlab/yanda/lti/dm_control/datasets/pm_lower_freq_val.pt
+    - /home/ubuntu/lti/dm_control/datasets/pm_lower_freq_val.pt
   episode_paths: []
   obs_keys:
     - position
@@ -10,6 +10,7 @@ data:
   max_context_length: null
   num_context_episodes: 3
   minimum_num_context_trajs: 2
+  use_rollout_episodes_as_supervision: true
   batch_size: 64
   num_workers: 4
   shuffle: true

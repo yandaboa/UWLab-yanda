@@ -501,6 +501,7 @@ class SplineQueryEpisodeGroupDataset(Dataset[dict[str, torch.Tensor]]):
         num_context_episodes: int | None = None,
         minimum_num_context_trajs: int = 1,
         include_current_trajectory: bool = False,
+        use_rollout_episodes_as_supervision: bool = False,
     ) -> None:
         _ = obs_keys
         self.obs_keys = None
@@ -509,12 +510,13 @@ class SplineQueryEpisodeGroupDataset(Dataset[dict[str, torch.Tensor]]):
         self.num_context_episodes = None if num_context_episodes is None else int(num_context_episodes)
         self.minimum_num_context_trajs = int(minimum_num_context_trajs)
         self.include_current_trajectory = bool(include_current_trajectory)
+        self.use_rollout_episodes_as_supervision = bool(use_rollout_episodes_as_supervision)
         if self.minimum_num_context_trajs <= 0:
             raise ValueError("minimum_num_context_trajs must be positive.")
 
         self.groups: list[list[dict[str, torch.Tensor]]] = []
         self.group_queries: list[dict[str, torch.Tensor]] = []
-        self.step_index: list[tuple[int, int]] = []
+        self.step_index: list[tuple[int, Literal["spline", "rollout"], int, int]] = []
         self.max_context_length = 0
 
         for path in episode_paths:
@@ -550,20 +552,23 @@ class SplineQueryEpisodeGroupDataset(Dataset[dict[str, torch.Tensor]]):
                     )
                     group_total_len += length
 
-                if len(group) == 0:
+                if self.num_context_episodes is not None and len(group) < self.num_context_episodes:
                     continue
 
                 query_obs, query_actions = self._build_query_from_spline(raw_spline)
-                query_len = int(min(query_obs.shape[0], query_actions.shape[0]))
-                if query_len <= 0:
-                    continue
+                assert query_obs.shape[0] == query_actions.shape[0]
+                query_len = query_obs.shape[0]
                 query_obs = query_obs[:query_len]
                 query_actions = query_actions[:query_len]
 
                 group_idx = len(self.groups)
                 self.groups.append(group)
                 self.group_queries.append({"obs": query_obs, "actions": query_actions})
-                self.step_index.extend([(group_idx, t) for t in range(query_len)])
+                self.step_index.extend([(group_idx, "spline", -1, t) for t in range(query_len)])
+                if self.use_rollout_episodes_as_supervision:
+                    for ep_idx, episode in enumerate(group):
+                        ep_len = int(episode["length"].item())
+                        self.step_index.extend([(group_idx, "rollout", ep_idx, t) for t in range(ep_len)])
                 if self.include_current_trajectory:
                     self.max_context_length = max(self.max_context_length, group_total_len + max(query_len - 1, 0))
                 else:
@@ -589,80 +594,89 @@ class SplineQueryEpisodeGroupDataset(Dataset[dict[str, torch.Tensor]]):
     def __len__(self) -> int:
         return len(self.step_index)
 
-    def _sample_context_episode_indices(self, group_size: int, sample_idx: int) -> list[int]:
+    def _sample_context_episode_indices(
+        self,
+        group_size: int,
+        sample_idx: int,
+        excluded_episode_idx: int | None = None,
+    ) -> list[int]:
         if group_size <= 0:
             return []
-        if group_size == 1:
-            if self.num_context_episodes is not None and self.num_context_episodes != 1:
-                raise ValueError(
-                    f"Requested num_context_episodes={self.num_context_episodes}, "
-                    "but group has only one episode."
-                )
-            return [0]
-        available = list(range(group_size))
+        available = [idx for idx in range(group_size) if idx != excluded_episode_idx]
+        max_context_eps = len(available)
+        assert max_context_eps > 0
         if self.num_context_episodes is not None:
-            if self.num_context_episodes > group_size:
-                raise ValueError(
-                    f"Requested num_context_episodes={self.num_context_episodes}, "
-                    f"but group has only {group_size} episodes."
-                )
+            if self.num_context_episodes > max_context_eps:
+                return available
             num_context_eps = self.num_context_episodes
         elif self.randomize_context:
-            if self.minimum_num_context_trajs > group_size:
+            if self.minimum_num_context_trajs > max_context_eps:
                 raise ValueError(
                     f"minimum_num_context_trajs={self.minimum_num_context_trajs} exceeds "
-                    f"group size ({group_size}) for grouped sampling."
+                    f"available context episodes ({max_context_eps}) for grouped sampling."
                 )
-            num_context_eps = random.randint(self.minimum_num_context_trajs, group_size)
+            num_context_eps = random.randint(self.minimum_num_context_trajs, max_context_eps)
         else:
             generator = torch.Generator()
             generator.manual_seed(self.base_seed + sample_idx)
-            if self.minimum_num_context_trajs > group_size:
+            if self.minimum_num_context_trajs > max_context_eps:
                 raise ValueError(
                     f"minimum_num_context_trajs={self.minimum_num_context_trajs} exceeds "
-                    f"group size ({group_size}) for grouped sampling."
+                    f"available context episodes ({max_context_eps}) for grouped sampling."
                 )
             num_context_eps = int(
                 torch.randint(
                     self.minimum_num_context_trajs,
-                    group_size + 1,
+                    max_context_eps + 1,
                     (1,),
                     generator=generator,
                 ).item()
             )
         if self.randomize_context:
-            perm = torch.randperm(group_size).tolist()
+            perm = torch.randperm(max_context_eps).tolist()
         else:
             generator = torch.Generator()
             generator.manual_seed(self.base_seed + sample_idx)
-            perm = torch.randperm(group_size, generator=generator).tolist()
+            perm = torch.randperm(max_context_eps, generator=generator).tolist()
         return [available[idx] for idx in perm[:num_context_eps]]
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        group_idx, t = self.step_index[idx]
+        group_idx, query_kind, query_ep_idx, t = self.step_index[idx]
         group = self.groups[group_idx]
-        query = self.group_queries[group_idx]
+        if query_kind == "spline":
+            query_obs_seq = self.group_queries[group_idx]["obs"]
+            query_action_seq = self.group_queries[group_idx]["actions"]
+            query_rewards_seq = torch.zeros(
+                (query_obs_seq.shape[0], group[0]["rewards"].shape[-1]),
+                dtype=group[0]["rewards"].dtype,
+            )
+            selected_ep_indices = self._sample_context_episode_indices(len(group), sample_idx=idx)
+        else:
+            query_episode = group[query_ep_idx]
+            query_obs_seq = query_episode["obs"]
+            query_action_seq = query_episode["actions"]
+            query_rewards_seq = query_episode["rewards"]
+            selected_ep_indices = self._sample_context_episode_indices(
+                len(group),
+                sample_idx=idx,
+                excluded_episode_idx=query_ep_idx,
+            )
 
-        selected_ep_indices = self._sample_context_episode_indices(len(group), sample_idx=idx)
-        assert len(selected_ep_indices) > 0, "Expected at least one context episode."
         selected_obs = [group[ep_idx]["obs"] for ep_idx in selected_ep_indices]
         selected_actions = [group[ep_idx]["actions"] for ep_idx in selected_ep_indices]
         selected_rewards = [group[ep_idx]["rewards"] for ep_idx in selected_ep_indices]
+        assert len(selected_obs) > 0
         obs_seq = torch.cat(selected_obs, dim=0)
         actions_seq = torch.cat(selected_actions, dim=0)
         rewards_seq = torch.cat(selected_rewards, dim=0)
         if self.include_current_trajectory:
-            query_rewards = torch.zeros(
-                (query["obs"].shape[0], rewards_seq.shape[-1]),
-                dtype=rewards_seq.dtype,
-            )
             obs_seq, actions_seq, rewards_seq = append_current_trajectory_prefix(
                 obs_seq,
                 actions_seq,
                 rewards_seq,
-                query["obs"],
-                query["actions"],
-                query_rewards,
+                query_obs_seq,
+                query_action_seq,
+                query_rewards_seq,
                 query_timestep=t,
             )
         return {
@@ -670,8 +684,8 @@ class SplineQueryEpisodeGroupDataset(Dataset[dict[str, torch.Tensor]]):
             "actions": actions_seq,
             "rewards": rewards_seq,
             "length": torch.tensor(int(obs_seq.shape[0]), dtype=torch.long),
-            "current_obs": query["obs"][t],
-            "target_action": query["actions"][t],
+            "current_obs": query_obs_seq[t],
+            "target_action": query_action_seq[t],
         }
 
 

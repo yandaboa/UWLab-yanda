@@ -88,6 +88,9 @@ class SupervisedContextDataCfg:
     minimum_num_context_trajs: int = 2
     """Lower bound for randomized context-trajectory count."""
 
+    use_rollout_episodes_as_supervision: bool = False
+    """If True, grouped spline-query datasets also supervise on rollout episodes."""
+
     batch_size: int = 128
     """Batch size for training."""
 

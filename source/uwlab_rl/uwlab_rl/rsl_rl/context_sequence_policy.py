@@ -315,33 +315,38 @@ class ContextSequencePolicy(nn.Module):
         ).to(device)
         state_dict = checkpoint["state_dict"]
 
-        def _load_allowing_missing_action_norm(target: "ContextSequencePolicy") -> None:
+        def _load_with_required_action_norm(target: "ContextSequencePolicy") -> None:
             incompatible = target.load_state_dict(state_dict, strict=False)
-            allowed_missing = {"action_norm_mean", "action_norm_std"}
             missing = set(incompatible.missing_keys)
             unexpected = set(incompatible.unexpected_keys)
-            extra_missing = missing - allowed_missing
-            if unexpected or extra_missing:
+            required_action_norm = {"action_norm_mean", "action_norm_std"}
+            missing_action_norm = required_action_norm & missing
+            if missing_action_norm:
+                raise RuntimeError(
+                    "Checkpoint missing required action normalization buffers: "
+                    f"{sorted(missing_action_norm)}"
+                )
+            if unexpected or missing:
                 raise RuntimeError(
                     "Unexpected checkpoint incompatibility. "
-                    f"missing={sorted(extra_missing)} unexpected={sorted(unexpected)}"
+                    f"missing={sorted(missing)} unexpected={sorted(unexpected)}"
                 )
 
         try:
-            _load_allowing_missing_action_norm(model)
+            _load_with_required_action_norm(model)
         except RuntimeError as e:
-            # Backwards compatibility: older checkpoints stored regression heads under action_distribution=\"normal\".
-            if cfg.model.action_distribution == "normal":
-                cfg.model.action_distribution = "scalar"
-                model = ContextSequencePolicy(
-                    cfg,
-                    obs_dim,
-                    action_dim,
-                    reward_dim,
-                    action_bins=action_bins,
-                    action_bin_values=action_bin_values,
-                ).to(device)
-                _load_allowing_missing_action_norm(model)
-            else:
-                raise e
+            # # Backwards compatibility: older checkpoints stored regression heads under action_distribution=\"normal\".
+            # if cfg.model.action_distribution == "normal":
+            #     cfg.model.action_distribution = "scalar"
+            #     model = ContextSequencePolicy(
+            #         cfg,
+            #         obs_dim,
+            #         action_dim,
+            #         reward_dim,
+            #         action_bins=action_bins,
+            #         action_bin_values=action_bin_values,
+            #     ).to(device)
+            #     _load_with_required_action_norm(model)
+            # else:
+            raise e
         return model, meta

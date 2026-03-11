@@ -11,7 +11,6 @@ import glob
 import math
 import os
 import sys
-from dataclasses import asdict
 from datetime import datetime
 
 import torch
@@ -38,6 +37,7 @@ for path in (ROOT_DIR, *PKG_DIRS):
         sys.path.append(path)
 
 from uwlab_rl.rsl_rl.context_sequence_policy import ContextSequencePolicy
+from uwlab_rl.rsl_rl.io_utils import class_to_dict, dump_yaml
 from uwlab_rl.rsl_rl.lr_utils import build_lr_scheduler
 from uwlab_rl.rsl_rl.supervised_context_cfg import SupervisedContextTrainerCfg
 # from uwlab_tasks.manager_based.manipulation.from_demo.config.ur5e_robotiq_2f85.agents.supervised_context_cfg import SupervisedContextRunnerCfg
@@ -57,8 +57,6 @@ from scripts.reinforcement_learning.rsl_rl.supervised_context_cli_utils import (
     apply_cfg_overrides,
     load_cfg_dict,
 )
-
-from isaaclab.utils.io import dump_yaml
 
 
 def _should_log(is_multi_gpu: bool, rank: int) -> bool:
@@ -131,6 +129,7 @@ def main() -> None:
     cfg = SupervisedContextTrainerCfg()
     cfg_dict = load_cfg_dict(args.config)
     apply_cfg_overrides(cfg, cfg_dict, overrides)
+    trainer_cfg_dict = class_to_dict(cfg)
     if cfg.distributed.distributed and dist.is_available() and not dist.is_initialized():
         backend = "nccl" if torch.cuda.is_available() else "gloo"
         dist.init_process_group(backend=backend)
@@ -326,7 +325,7 @@ def main() -> None:
         os.makedirs(log_dir, exist_ok=True)
         params_dir = os.path.join(log_dir, "params")
         os.makedirs(params_dir, exist_ok=True)
-        dump_yaml(os.path.join(params_dir, "trainer.yaml"), asdict(cfg))
+        dump_yaml(os.path.join(params_dir, "trainer.yaml"), trainer_cfg_dict)
     wandb_run = None
     if _should_log(is_multi_gpu, rank) and cfg.logging.use_wandb:
         try:
@@ -338,7 +337,7 @@ def main() -> None:
             wandb_run = wandb.init(
                 project=project_name,
                 name=cfg.logging.run_name or run_name,
-                config=asdict(cfg),
+                config=trainer_cfg_dict,
             )
 
     total_steps = 0
@@ -475,7 +474,7 @@ def main() -> None:
                 ckpt_path = os.path.join(log_dir, f"model_{total_steps:06d}.pt")
                 model_module = model.module if isinstance(model, DistributedDataParallel) else model
                 payload = model_module.get_state_dict_payload()
-                payload["trainer_cfg"] = asdict(cfg)
+                payload["trainer_cfg"] = trainer_cfg_dict
                 payload["meta"] = {
                     "obs_dim": obs_dim,
                     "action_dim": action_dim,
