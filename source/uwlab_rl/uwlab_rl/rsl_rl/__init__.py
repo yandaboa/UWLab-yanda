@@ -2,5 +2,3 @@
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-
-from .rl_cfg import BehaviorCloningCfg, OffPolicyAlgorithmCfg, RslRlFancyPpoAlgorithmCfg

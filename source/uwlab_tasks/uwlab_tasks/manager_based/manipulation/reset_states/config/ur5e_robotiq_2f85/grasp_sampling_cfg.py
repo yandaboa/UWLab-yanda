@@ -20,7 +20,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 import uwlab_assets.robots.ur5e_robotiq_gripper as ur5e_robotiq_gripper
 from uwlab_assets import UWLAB_CLOUD_ASSETS_DIR
 
-from ... import mdp as task_mdp
+from ... import mdp as omni_reset_mdp
 
 OBJECT_SPAWN_HEIGHT = 0.5
 
@@ -66,7 +66,7 @@ class GraspSamplingEventCfg:
     """Configuration for grasp sampling randomization."""
 
     reset_object_position = EventTerm(
-        func=task_mdp.reset_root_state_uniform,
+        func=omni_reset_mdp.reset_root_state_uniform,
         mode="reset",
         params={
             "pose_range": {
@@ -83,7 +83,7 @@ class GraspSamplingEventCfg:
     )
 
     grasp_sampling = EventTerm(
-        func=task_mdp.grasp_sampling_event,
+        func=omni_reset_mdp.grasp_sampling_event,
         mode="reset",
         params={
             "object_cfg": SceneEntityCfg("object"),
@@ -98,7 +98,7 @@ class GraspSamplingEventCfg:
     )
 
     global_physics_control_event = EventTerm(
-        func=task_mdp.global_physics_control_event,
+        func=omni_reset_mdp.global_physics_control_event,
         mode="interval",
         interval_range_s=(0.1, 0.1),
         params={
@@ -114,14 +114,14 @@ class GraspSamplingEventCfg:
 class GraspSamplingTerminationCfg:
     """Configuration for grasp sampling termination conditions."""
 
-    time_out = DoneTerm(func=task_mdp.time_out, time_out=True)
+    time_out = DoneTerm(func=omni_reset_mdp.time_out, time_out=True)
 
     success = DoneTerm(
-        func=task_mdp.check_grasp_success,
+        func=omni_reset_mdp.check_grasp_success,
         params={
             "object_cfg": SceneEntityCfg("object"),
             "gripper_cfg": SceneEntityCfg("robot"),
-            "collision_analyzer_cfg": task_mdp.CollisionAnalyzerCfg(
+            "collision_analyzer_cfg": omni_reset_mdp.CollisionAnalyzerCfg(
                 num_points=1024,
                 max_dist=0.5,
                 min_dist=-0.0005,

@@ -1,0 +1,17 @@
+[package]
+# Semantic Versioning is used: https://semver.org/
+version = "0.1.0"
+
+# Description
+title = "UW Lab Metalearning"
+description = "Extension providing meta-learning utilities."
+readme = "docs/README.md"
+repository = "https://github.com/uw-lab/UWLab"
+category = "robotics"
+keywords = ["robotics", "learning", "metalearning"]
+
+[dependencies]
+"uwlab" = {}
+
+[[python.module]]
+name = "metalearning"

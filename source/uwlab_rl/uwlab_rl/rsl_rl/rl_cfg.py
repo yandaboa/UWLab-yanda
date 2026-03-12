@@ -66,6 +66,105 @@ class RslRlFancyActorCriticCfg(RslRlPpoActorCriticCfg):
 
 
 @configclass
+class TransformerOptimizerCfg:
+    """Configuration for the transformer optimizer."""
+    learning_rate: float = 1.0e-4
+    """The learning rate for the transformer optimizer. Default is 1.0e-4."""
+
+    weight_decay: float = 0.00
+    """The weight decay for the transformer optimizer."""
+
+    betas: tuple[float, float] = (0.9, 0.99)
+    """The betas for the transformer optimizer."""
+
+    eps: float = 1.0e-8
+    """The epsilon for the transformer optimizer."""
+
+    max_grad_norm: float = 1.0
+    """The maximum gradient norm for the transformer optimizer."""
+
+    optimizer_class: str = "AdamW"
+    """The class name of the transformer optimizer."""
+
+    lr_warmup_steps: int = 0
+    """The number of warmup steps for the learning rate scheduler."""
+
+    lr_schedule: str | None = None
+    """The learning rate schedule function name."""
+
+
+@configclass
+class RslRlFancyTransformerHistoryActorCriticCfg(RslRlFancyActorCriticCfg):
+    """Configuration for actor-critic networks with transformer history."""
+
+    embedding_dim: int = 128
+    """The embedding dimension for the transformer history actor-critic."""
+
+    hidden_dim: int = 256
+    """The hidden dimension for the transformer history actor-critic."""
+
+    num_layers: int = 2
+    """The number of layers for the transformer history actor-critic."""
+
+    num_heads: int = 4
+    """The number of heads for the transformer history actor-critic."""
+
+    embedding_dropout: float = 0.1
+    """The dropout for the transformer history actor-critic."""
+
+    attention_dropout: float = 0.1
+    """The attention dropout for the transformer history actor-critic."""
+
+    residual_dropout: float = 0.1
+    """The residual dropout for the transformer history actor-critic."""
+
+    max_num_episodes: int = 1
+    """The maximum number of episodes for the transformer history actor-critic."""
+
+    context_length_override: int | None = None
+    """The context length override for the transformer history actor-critic."""
+
+    cross_attention_merge: bool = False
+    """Whether to merge obs and context via cross-attention."""
+
+    obs_token_count: int = 4
+    """The number of obs query tokens for cross-attention."""
+
+    context_token_layout: str | None = None
+    """Layout for context tokens (e.g., "merged", "state_action", "state_only").
+
+    This layout determines the transformer actor class internally.
+    """
+
+    include_actions_in_context: bool = True
+    """Whether to include action terms in merged context tokens."""
+
+    include_rewards_in_context: bool = True
+    """Whether to include reward terms in merged context tokens."""
+
+    share_current_and_context_obs_projection: bool = False
+    """Reuse one projection for current_obs and context_obs; requires matching feature sizes."""
+
+    encoding_projection_hidden_dim: int | None = None
+    """Optional hidden size for obs encoders (in->hidden->embedding instead of single linear)."""
+
+    action_distribution: Literal["normal", "categorical"] = "normal"
+    """Action distribution type for the policy."""
+
+    model_finetune_ckpt: str | None = None
+    """Optional supervised-context checkpoint to initialize the actor."""
+
+    optimizer: TransformerOptimizerCfg = TransformerOptimizerCfg()
+    """The optimizer for the transformer history actor-critic."""
+
+    log_attention_entropy: bool = False
+    """Whether to log transformer attention entropy during training."""
+
+    attention_entropy_interval: int = 0
+    """Log attention entropy every N policy updates (0 disables)."""
+
+
+@configclass
 class RslRlFancyPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
     """Configuration for the PPO algorithm."""
 

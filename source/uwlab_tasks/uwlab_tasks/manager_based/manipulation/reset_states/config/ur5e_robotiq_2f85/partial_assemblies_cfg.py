@@ -18,7 +18,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 from uwlab_assets import UWLAB_CLOUD_ASSETS_DIR
 
-from ... import mdp as task_mdp
+from ... import mdp as omni_reset_mdp
 
 OBJECT_SPAWN_HEIGHT = 0.5
 
@@ -83,7 +83,7 @@ class PartialAssembliesEventCfg:
 
     # Low friction so that the object can around
     insertive_object_material = EventTerm(
-        func=task_mdp.randomize_rigid_body_material,
+        func=omni_reset_mdp.randomize_rigid_body_material,
         mode="startup",
         params={
             "static_friction_range": (0.0, 0.0),
@@ -96,7 +96,7 @@ class PartialAssembliesEventCfg:
     )
 
     receptive_object_material = EventTerm(
-        func=task_mdp.randomize_rigid_body_material,
+        func=omni_reset_mdp.randomize_rigid_body_material,
         mode="startup",
         params={
             "static_friction_range": (0.0, 0.0),
@@ -109,7 +109,7 @@ class PartialAssembliesEventCfg:
     )
 
     partial_assembly_sampling = EventTerm(
-        func=task_mdp.assembly_sampling_event,
+        func=omni_reset_mdp.assembly_sampling_event,
         mode="reset",
         params={
             "receptive_object_cfg": SceneEntityCfg("receptive_object"),
@@ -118,7 +118,7 @@ class PartialAssembliesEventCfg:
     )
 
     apply_forces = EventTerm(
-        func=task_mdp.apply_external_force_torque,
+        func=omni_reset_mdp.apply_external_force_torque,
         mode="interval",
         interval_range_s=(1 / 120, 1 / 120),
         params={
@@ -130,7 +130,7 @@ class PartialAssembliesEventCfg:
 
     # Collect pose data from environments with positive rewards
     pose_data_collection = EventTerm(
-        func=task_mdp.pose_logging_event,
+        func=omni_reset_mdp.pose_logging_event,
         mode="interval",
         interval_range_s=(1 / 120, 1 / 120),
         params={
@@ -144,10 +144,10 @@ class PartialAssembliesEventCfg:
 class PartialAssembliesTerminationCfg:
     """Configuration for partial assemblies termination conditions."""
 
-    time_out = DoneTerm(func=task_mdp.time_out, time_out=True)
+    time_out = DoneTerm(func=omni_reset_mdp.time_out, time_out=True)
 
     obb_no_overlap = DoneTerm(
-        func=task_mdp.check_obb_no_overlap_termination,
+        func=omni_reset_mdp.check_obb_no_overlap_termination,
         params={
             "insertive_object_cfg": SceneEntityCfg("insertive_object"),
             "enable_visualization": False,
@@ -168,9 +168,9 @@ class PartialAssembliesRewardsCfg:
     """Configuration for partial assemblies rewards."""
 
     collision_free = RewTerm(
-        func=task_mdp.collision_free,
+        func=omni_reset_mdp.collision_free,
         params={
-            "collision_analyzer_cfg": task_mdp.CollisionAnalyzerCfg(
+            "collision_analyzer_cfg": omni_reset_mdp.CollisionAnalyzerCfg(
                 num_points=1024,
                 max_dist=0.5,
                 min_dist=-0.0005,

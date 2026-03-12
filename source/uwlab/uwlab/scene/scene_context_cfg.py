@@ -5,7 +5,7 @@
 
 from collections.abc import Callable
 
-from isaaclab.utils.configclass import configclass
+from isaaclab.utils import configclass
 
 from .scene_context import SceneContext
 

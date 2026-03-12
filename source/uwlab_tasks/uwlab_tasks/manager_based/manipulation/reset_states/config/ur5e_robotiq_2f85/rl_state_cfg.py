@@ -31,7 +31,7 @@ from uwlab_tasks.manager_based.manipulation.reset_states.config.ur5e_robotiq_2f8
     Ur5eRobotiq2f85RelativeOSCAction,
 )
 
-from ... import mdp as task_mdp
+from ... import mdp as omni_reset_mdp
 
 
 @configclass
@@ -114,7 +114,7 @@ class BaseEventCfg:
 
     # mode: startup (randomize dynamics)
     robot_material = EventTerm(
-        func=task_mdp.randomize_rigid_body_material,  # type: ignore
+        func=omni_reset_mdp.randomize_rigid_body_material,  # type: ignore
         mode="startup",
         params={
             "static_friction_range": (0.3, 1.2),
@@ -128,11 +128,13 @@ class BaseEventCfg:
 
     # use large friction to avoid slipping
     insertive_object_material = EventTerm(
-        func=task_mdp.randomize_rigid_body_material,  # type: ignore
+        func=omni_reset_mdp.randomize_rigid_body_material,  # type: ignore
         mode="startup",
         params={
-            "static_friction_range": (1.0, 2.0),
-            "dynamic_friction_range": (0.9, 1.9),
+            "static_friction_range": (4.0, 6.0),
+            "dynamic_friction_range": (2.0, 3.0),
+            # "static_friction_range": (1.0, 2.0),
+            # "dynamic_friction_range": (0.9, 1.9),
             "restitution_range": (0.0, 0.0),
             "num_buckets": 256,
             "asset_cfg": SceneEntityCfg("insertive_object"),
@@ -142,7 +144,7 @@ class BaseEventCfg:
 
     # use large friction to avoid slipping
     receptive_object_material = EventTerm(
-        func=task_mdp.randomize_rigid_body_material,  # type: ignore
+        func=omni_reset_mdp.randomize_rigid_body_material,  # type: ignore
         mode="startup",
         params={
             "static_friction_range": (1.0, 2.0),
@@ -155,7 +157,7 @@ class BaseEventCfg:
     )
 
     table_material = EventTerm(
-        func=task_mdp.randomize_rigid_body_material,  # type: ignore
+        func=omni_reset_mdp.randomize_rigid_body_material,  # type: ignore
         mode="startup",
         params={
             "static_friction_range": (0.3, 0.6),
@@ -168,7 +170,7 @@ class BaseEventCfg:
     )
 
     randomize_robot_mass = EventTerm(
-        func=task_mdp.randomize_rigid_body_mass,
+        func=omni_reset_mdp.randomize_rigid_body_mass,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
@@ -180,12 +182,13 @@ class BaseEventCfg:
     )
 
     randomize_insertive_object_mass = EventTerm(
-        func=task_mdp.randomize_rigid_body_mass,
+        func=omni_reset_mdp.randomize_rigid_body_mass,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("insertive_object"),
             # we assume insertive object is somewhere between 20g and 200g
-            "mass_distribution_params": (0.02, 0.2),
+            "mass_distribution_params": (0.5, 1.0),
+            # "mass_distribution_params": (0.02, 0.2),
             "operation": "abs",
             "distribution": "uniform",
             "recompute_inertia": True,
@@ -193,7 +196,7 @@ class BaseEventCfg:
     )
 
     randomize_receptive_object_mass = EventTerm(
-        func=task_mdp.randomize_rigid_body_mass,
+        func=omni_reset_mdp.randomize_rigid_body_mass,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("receptive_object"),
@@ -205,7 +208,7 @@ class BaseEventCfg:
     )
 
     randomize_table_mass = EventTerm(
-        func=task_mdp.randomize_rigid_body_mass,
+        func=omni_reset_mdp.randomize_rigid_body_mass,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("table"),
@@ -217,7 +220,7 @@ class BaseEventCfg:
     )
 
     randomize_robot_joint_parameters = EventTerm(
-        func=task_mdp.randomize_joint_parameters,
+        func=omni_reset_mdp.randomize_joint_parameters,
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["shoulder.*", "elbow.*", "wrist.*", "finger_joint"]),
@@ -229,7 +232,7 @@ class BaseEventCfg:
     )
 
     randomize_gripper_actuator_parameters = EventTerm(
-        func=task_mdp.randomize_actuator_gains,
+        func=omni_reset_mdp.randomize_actuator_gains,
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["finger_joint"]),
@@ -241,7 +244,7 @@ class BaseEventCfg:
     )
 
     # mode: reset
-    reset_everything = EventTerm(func=task_mdp.reset_scene_to_default, mode="reset", params={})
+    reset_everything = EventTerm(func=omni_reset_mdp.reset_scene_to_default, mode="reset", params={})
 
 
 @configclass
@@ -249,7 +252,7 @@ class TrainEventCfg(BaseEventCfg):
     """Configuration for training events."""
 
     reset_from_reset_states = EventTerm(
-        func=task_mdp.MultiResetManager,
+        func=omni_reset_mdp.MultiResetManager,
         mode="reset",
         params={
             "base_paths": [
@@ -269,7 +272,7 @@ class EvalEventCfg(BaseEventCfg):
     """Configuration for evaluation events."""
 
     reset_from_reset_states = EventTerm(
-        func=task_mdp.MultiResetManager,
+        func=omni_reset_mdp.MultiResetManager,
         mode="reset",
         params={
             "base_paths": [
@@ -287,7 +290,7 @@ class EvalEventCfg(BaseEventCfg):
 class CommandsCfg:
     """Command specifications for the MDP."""
 
-    task_command = task_mdp.TaskCommandCfg(
+    task_command = omni_reset_mdp.TaskCommandCfg(
         asset_cfg=SceneEntityCfg("robot", body_names="body"),
         resampling_time_range=(1e6, 1e6),
         success_position_threshold=0.005,
@@ -305,12 +308,12 @@ class ObservationsCfg:
     class PolicyCfg(ObsGroup):
         """Observations for policy group."""
 
-        prev_actions = ObsTerm(func=task_mdp.last_action)
+        prev_actions = ObsTerm(func=omni_reset_mdp.last_action)
 
-        joint_pos = ObsTerm(func=task_mdp.joint_pos)
+        joint_pos = ObsTerm(func=omni_reset_mdp.joint_pos)
 
         end_effector_pose = ObsTerm(
-            func=task_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
             params={
                 "target_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
                 "root_asset_cfg": SceneEntityCfg("robot"),
@@ -321,7 +324,7 @@ class ObservationsCfg:
         )
 
         insertive_asset_pose = ObsTerm(
-            func=task_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
             params={
                 "target_asset_cfg": SceneEntityCfg("insertive_object"),
                 "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
@@ -331,20 +334,22 @@ class ObservationsCfg:
         )
 
         receptive_asset_pose = ObsTerm(
-            func=task_mdp.target_asset_pose_in_root_asset_frame,
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame,
             params={
                 "target_asset_cfg": SceneEntityCfg("receptive_object"),
                 "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
                 "rotation_repr": "axis_angle",
+                # "ood_offset": 0.5,
             },
         )
 
         insertive_asset_in_receptive_asset_frame: ObsTerm = ObsTerm(
-            func=task_mdp.target_asset_pose_in_root_asset_frame,
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame,
             params={
                 "target_asset_cfg": SceneEntityCfg("insertive_object"),
                 "root_asset_cfg": SceneEntityCfg("receptive_object"),
                 "rotation_repr": "axis_angle",
+                # "ood_offset": 0.5,
             },
         )
 
@@ -357,12 +362,14 @@ class ObservationsCfg:
     class CriticCfg(ObsGroup):
         """Critic observations for policy group."""
 
-        prev_actions = ObsTerm(func=task_mdp.last_action)
+        prev_actions = ObsTerm(func=omni_reset_mdp.last_action)
 
-        joint_pos = ObsTerm(func=task_mdp.joint_pos)
+        joint_pos = ObsTerm(func=omni_reset_mdp.joint_pos)
+
+        joint_vel = ObsTerm(func=omni_reset_mdp.joint_vel)
 
         end_effector_pose = ObsTerm(
-            func=task_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
             params={
                 "target_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
                 "root_asset_cfg": SceneEntityCfg("robot"),
@@ -373,7 +380,7 @@ class ObservationsCfg:
         )
 
         insertive_asset_pose = ObsTerm(
-            func=task_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame_with_metadata,
             params={
                 "target_asset_cfg": SceneEntityCfg("insertive_object"),
                 "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
@@ -383,30 +390,31 @@ class ObservationsCfg:
         )
 
         receptive_asset_pose = ObsTerm(
-            func=task_mdp.target_asset_pose_in_root_asset_frame,
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame,
             params={
                 "target_asset_cfg": SceneEntityCfg("receptive_object"),
                 "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
                 "rotation_repr": "axis_angle",
+                # "ood_offset": 1.0,
             },
         )
 
         insertive_asset_in_receptive_asset_frame: ObsTerm = ObsTerm(
-            func=task_mdp.target_asset_pose_in_root_asset_frame,
+            func=omni_reset_mdp.target_asset_pose_in_root_asset_frame,
             params={
                 "target_asset_cfg": SceneEntityCfg("insertive_object"),
                 "root_asset_cfg": SceneEntityCfg("receptive_object"),
                 "rotation_repr": "axis_angle",
+                # "ood_offset": 1.0,
             },
         )
 
         # privileged observations
-        time_left = ObsTerm(func=task_mdp.time_left)
+        time_left = ObsTerm(func=omni_reset_mdp.time_left)
 
-        joint_vel = ObsTerm(func=task_mdp.joint_vel)
 
         end_effector_vel_lin_ang_b = ObsTerm(
-            func=task_mdp.asset_link_velocity_in_root_asset_frame,
+            func=omni_reset_mdp.asset_link_velocity_in_root_asset_frame,
             params={
                 "target_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
                 "root_asset_cfg": SceneEntityCfg("robot"),
@@ -414,42 +422,42 @@ class ObservationsCfg:
         )
 
         robot_material_properties = ObsTerm(
-            func=task_mdp.get_material_properties, params={"asset_cfg": SceneEntityCfg("robot")}
+            func=omni_reset_mdp.get_material_properties, params={"asset_cfg": SceneEntityCfg("robot")}
         )
 
         insertive_object_material_properties = ObsTerm(
-            func=task_mdp.get_material_properties, params={"asset_cfg": SceneEntityCfg("insertive_object")}
+            func=omni_reset_mdp.get_material_properties, params={"asset_cfg": SceneEntityCfg("insertive_object")}
         )
 
         receptive_object_material_properties = ObsTerm(
-            func=task_mdp.get_material_properties, params={"asset_cfg": SceneEntityCfg("receptive_object")}
+            func=omni_reset_mdp.get_material_properties, params={"asset_cfg": SceneEntityCfg("receptive_object")}
         )
 
         table_material_properties = ObsTerm(
-            func=task_mdp.get_material_properties, params={"asset_cfg": SceneEntityCfg("table")}
+            func=omni_reset_mdp.get_material_properties, params={"asset_cfg": SceneEntityCfg("table")}
         )
 
-        robot_mass = ObsTerm(func=task_mdp.get_mass, params={"asset_cfg": SceneEntityCfg("robot")})
+        robot_mass = ObsTerm(func=omni_reset_mdp.get_mass, params={"asset_cfg": SceneEntityCfg("robot")})
 
         insertive_object_mass = ObsTerm(
-            func=task_mdp.get_mass, params={"asset_cfg": SceneEntityCfg("insertive_object")}
+            func=omni_reset_mdp.get_mass, params={"asset_cfg": SceneEntityCfg("insertive_object")}
         )
 
         receptive_object_mass = ObsTerm(
-            func=task_mdp.get_mass, params={"asset_cfg": SceneEntityCfg("receptive_object")}
+            func=omni_reset_mdp.get_mass, params={"asset_cfg": SceneEntityCfg("receptive_object")}
         )
 
-        table_mass = ObsTerm(func=task_mdp.get_mass, params={"asset_cfg": SceneEntityCfg("table")})
+        table_mass = ObsTerm(func=omni_reset_mdp.get_mass, params={"asset_cfg": SceneEntityCfg("table")})
 
-        robot_joint_friction = ObsTerm(func=task_mdp.get_joint_friction, params={"asset_cfg": SceneEntityCfg("robot")})
+        robot_joint_friction = ObsTerm(func=omni_reset_mdp.get_joint_friction, params={"asset_cfg": SceneEntityCfg("robot")})
 
-        robot_joint_armature = ObsTerm(func=task_mdp.get_joint_armature, params={"asset_cfg": SceneEntityCfg("robot")})
+        robot_joint_armature = ObsTerm(func=omni_reset_mdp.get_joint_armature, params={"asset_cfg": SceneEntityCfg("robot")})
 
         robot_joint_stiffness = ObsTerm(
-            func=task_mdp.get_joint_stiffness, params={"asset_cfg": SceneEntityCfg("robot")}
+            func=omni_reset_mdp.get_joint_stiffness, params={"asset_cfg": SceneEntityCfg("robot")}
         )
 
-        robot_joint_damping = ObsTerm(func=task_mdp.get_joint_damping, params={"asset_cfg": SceneEntityCfg("robot")})
+        robot_joint_damping = ObsTerm(func=omni_reset_mdp.get_joint_damping, params={"asset_cfg": SceneEntityCfg("robot")})
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -466,22 +474,22 @@ class RewardsCfg:
 
     # safety rewards
 
-    action_magnitude = RewTerm(func=task_mdp.action_l2_clamped, weight=-1e-4)
+    action_magnitude = RewTerm(func=omni_reset_mdp.action_l2_clamped, weight=-1e-4)
 
-    action_rate = RewTerm(func=task_mdp.action_rate_l2_clamped, weight=-1e-4)
+    action_rate = RewTerm(func=omni_reset_mdp.action_rate_l2_clamped, weight=-1e-4)
 
     joint_vel = RewTerm(
-        func=task_mdp.joint_vel_l2_clamped,
+        func=omni_reset_mdp.joint_vel_l2_clamped,
         weight=-1e-3,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["shoulder.*", "elbow.*", "wrist.*"])},
     )
 
-    abnormal_robot = RewTerm(func=task_mdp.abnormal_robot_state, weight=-100.0)
+    abnormal_robot = RewTerm(func=omni_reset_mdp.abnormal_robot_state, weight=-100.0)
 
     # task rewards
 
     progress_context = RewTerm(
-        func=task_mdp.ProgressContext,  # type: ignore
+        func=omni_reset_mdp.ProgressContext,  # type: ignore
         weight=0.1,
         params={
             "insertive_asset_cfg": SceneEntityCfg("insertive_object"),
@@ -490,7 +498,7 @@ class RewardsCfg:
     )
 
     ee_asset_distance = RewTerm(
-        func=task_mdp.ee_asset_distance_tanh,
+        func=omni_reset_mdp.ee_asset_distance_tanh,
         weight=0.1,
         params={
             "root_asset_cfg": SceneEntityCfg("robot", body_names="robotiq_base_link"),
@@ -500,18 +508,18 @@ class RewardsCfg:
         },
     )
 
-    dense_success_reward = RewTerm(func=task_mdp.dense_success_reward, weight=0.1, params={"std": 1.0})
+    dense_success_reward = RewTerm(func=omni_reset_mdp.dense_success_reward, weight=0.1, params={"std": 1.0})
 
-    success_reward = RewTerm(func=task_mdp.success_reward, weight=1.0)
+    success_reward = RewTerm(func=omni_reset_mdp.success_reward, weight=1.0)
 
 
 @configclass
 class TerminationsCfg:
     """Termination terms for the MDP."""
 
-    time_out = DoneTerm(func=task_mdp.time_out, time_out=True)
+    time_out = DoneTerm(func=omni_reset_mdp.time_out, time_out=True)
 
-    abnormal_robot = DoneTerm(func=task_mdp.abnormal_robot_state)
+    abnormal_robot = DoneTerm(func=omni_reset_mdp.abnormal_robot_state)
 
     success = DoneTerm(func=task_mdp.success_term)
 
@@ -630,7 +638,7 @@ class Ur5eRobotiq2f85RelCartesianOSCTrainCfg(Ur5eRobotiq2f85RlStateCfg):
         self.scene.robot = EXPLICIT_UR5E_ROBOTIQ_2F85.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
         self.events.randomize_robot_actuator_parameters = EventTerm(
-            func=task_mdp.randomize_operational_space_controller_gains,
+            func=omni_reset_mdp.randomize_operational_space_controller_gains,
             mode="reset",
             params={
                 "action_name": "arm",
@@ -654,7 +662,7 @@ class Ur5eRobotiq2f85RelJointPosTrainCfg(Ur5eRobotiq2f85RlStateCfg):
         self.scene.robot = IMPLICIT_UR5E_ROBOTIQ_2F85.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
         self.events.randomize_robot_actuator_parameters = EventTerm(
-            func=task_mdp.randomize_actuator_gains,
+            func=omni_reset_mdp.randomize_actuator_gains,
             mode="reset",
             params={
                 "asset_cfg": SceneEntityCfg("robot", joint_names=["shoulder.*", "elbow.*", "wrist.*", "finger_joint"]),
@@ -679,7 +687,7 @@ class Ur5eRobotiq2f85RelCartesianOSCEvalCfg(Ur5eRobotiq2f85RlStateCfg):
         self.scene.robot = EXPLICIT_UR5E_ROBOTIQ_2F85.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
         self.events.randomize_robot_actuator_parameters = EventTerm(
-            func=task_mdp.randomize_operational_space_controller_gains,
+            func=omni_reset_mdp.randomize_operational_space_controller_gains,
             mode="reset",
             params={
                 "action_name": "arm",
@@ -703,7 +711,7 @@ class Ur5eRobotiq2f85RelJointPosEvalCfg(Ur5eRobotiq2f85RlStateCfg):
         self.scene.robot = IMPLICIT_UR5E_ROBOTIQ_2F85.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
         self.events.randomize_robot_actuator_parameters = EventTerm(
-            func=task_mdp.randomize_actuator_gains,
+            func=omni_reset_mdp.randomize_actuator_gains,
             mode="reset",
             params={
                 "asset_cfg": SceneEntityCfg("robot", joint_names=["shoulder.*", "elbow.*", "wrist.*", "finger_joint"]),
