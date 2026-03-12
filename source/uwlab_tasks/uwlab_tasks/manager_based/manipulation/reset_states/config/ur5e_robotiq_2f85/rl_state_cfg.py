@@ -276,10 +276,12 @@ class EvalEventCfg(BaseEventCfg):
         mode="reset",
         params={
             "base_paths": [
-                f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEAnywhere",
+                f"reset_state_datasets/ObjectAnywhereEEAnywhere",
+                # f"{UWLAB_CLOUD_ASSETS_DIR}/Datasets/Resets/ObjectPairs/ObjectAnywhereEEAnywhere",
             ],
             "probs": [1.0],
             "success": "env.reward_manager.get_term_cfg('progress_context').func.success",
+            "reset_to_same_state": True,
         },
     )
 
@@ -519,6 +521,8 @@ class TerminationsCfg:
 
     abnormal_robot = DoneTerm(func=omni_reset_mdp.abnormal_robot_state)
 
+    success = DoneTerm(func=task_mdp.success_term)
+
 
 def make_insertive_object(usd_path: str):
     return RigidObjectCfg(
@@ -596,7 +600,7 @@ class Ur5eRobotiq2f85RlStateCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self):
         self.decimation = 12
-        self.episode_length_s = 16.0
+        self.episode_length_s = 10.0
         # simulation settings
         self.sim.dt = 1 / 120.0
 

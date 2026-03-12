@@ -999,6 +999,7 @@ class MultiResetManager(ManagerTermBase):
 
         base_paths: list[str] = cfg.params.get("base_paths", [])
         probabilities: list[float] = cfg.params.get("probs", [])
+        self.reset_to_same_state: bool = cfg.params.get("reset_to_same_state", False)
 
         if not base_paths:
             raise ValueError("No base paths provided")
@@ -1029,6 +1030,7 @@ class MultiResetManager(ManagerTermBase):
                 raise FileNotFoundError(f"Dataset file {dataset_file} could not be accessed or downloaded.")
 
             dataset = torch.load(local_file_path)
+            print(f"Loaded dataset {dataset_file} with {len(dataset['initial_state']['articulation']['robot']['joint_position'])} states")
             num_states.append(len(dataset["initial_state"]["articulation"]["robot"]["joint_position"]))
             init_indices = torch.arange(num_states[-1], device=env.device)
             self.datasets.append(sample_state_data_set(dataset, init_indices, env.device))
@@ -1053,12 +1055,15 @@ class MultiResetManager(ManagerTermBase):
             self.success_monitor = success_monitor_cfg.class_type(success_monitor_cfg)
 
         self.task_id = torch.randint(0, self.num_tasks, (self.num_envs,), device=self.device)
+        self.state_id = torch.zeros((self.num_envs,), device=self.device, dtype=torch.int32)
+        self.first_reset = True
+        # TODO: this is redundant since we already have state_id...
         self.last_state_indices = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
         self._has_cached_state = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
 
         # expose on env so other components can reuse the reset indices
         setattr(self._env, "multi_reset_manager", self)
-
+        
     def __call__(
         self,
         env: ManagerBasedEnv,
@@ -1089,26 +1094,29 @@ class MultiResetManager(ManagerTermBase):
                     f"Metrics/task_{task_idx}_normalized_prob": self.probs[task_idx].item(),
                 })
 
+        # Sample which dataset to use for each environment
         raw_num_similar_trajectories = getattr(self._env, "num_similar_trajectories", None)
-        num_collected_episodes = getattr(self._env, "num_collected_episodes", None)
-        if (
-            isinstance(raw_num_similar_trajectories, int)
-            and raw_num_similar_trajectories > 1
-            and isinstance(num_collected_episodes, torch.Tensor)
-        ):
-            should_resample = ~self._has_cached_state[env_ids]
-            should_resample |= (
-                num_collected_episodes[env_ids].to(dtype=torch.long)
-                == (raw_num_similar_trajectories - 1)
-            )
-        else:
-            should_resample = torch.ones((len(env_ids),), dtype=torch.bool, device=self._env.device)
+        assert not (self.reset_to_same_state and raw_num_similar_trajectories is None)
+        if not self.reset_to_same_state:
+            num_collected_episodes = getattr(self._env, "num_collected_episodes", None)
+            if (
+                isinstance(raw_num_similar_trajectories, int)
+                and raw_num_similar_trajectories > 1
+                and isinstance(num_collected_episodes, torch.Tensor)
+            ):
+                should_resample = ~self._has_cached_state[env_ids]
+                should_resample |= (
+                    num_collected_episodes[env_ids].to(dtype=torch.long)
+                    == (raw_num_similar_trajectories - 1)
+                )
+            else:
+                should_resample = torch.ones((len(env_ids),), dtype=torch.bool, device=self._env.device)
 
-        dataset_indices = self.task_id[env_ids].clone()
-        if torch.any(should_resample):
-            sampled_dataset_indices = torch.multinomial(self.probs, int(should_resample.sum().item()), replacement=True)
-            dataset_indices[should_resample] = sampled_dataset_indices
-        self.task_id[env_ids] = dataset_indices
+            dataset_indices = self.task_id[env_ids].clone()
+            if torch.any(should_resample):
+                sampled_dataset_indices = torch.multinomial(self.probs, int(should_resample.sum().item()), replacement=True)
+                dataset_indices[should_resample] = sampled_dataset_indices
+            self.task_id[env_ids] = dataset_indices
 
         def _sample_state_indices(dataset_idx: int, count: int) -> torch.Tensor:
             num_states_for_dataset = int(self.num_states[dataset_idx].item())
@@ -1135,15 +1143,27 @@ class MultiResetManager(ManagerTermBase):
                 continue
 
             current_env_ids = env_ids[mask]
-            current_state_indices = self.last_state_indices[current_env_ids].clone()
-            current_should_resample = should_resample[mask]
-            if torch.any(current_should_resample):
-                sampled_state_indices = _sample_state_indices(dataset_idx, int(current_should_resample.sum().item()))
-                current_state_indices[current_should_resample] = sampled_state_indices
-            self.last_state_indices[current_env_ids] = current_state_indices
-            self._has_cached_state[current_env_ids] = True
-            states_to_reset_from = sample_from_nested_dict(self.datasets[dataset_idx], current_state_indices)
+            if self.reset_to_same_state:
+                if not self.first_reset:
+                    state_indices = self.state_id[current_env_ids]
+                else:
+                    state_indices = torch.randint(
+                        0, self.num_states[dataset_idx], (len(current_env_ids),), device=self._env.device
+                    )
+                    self.state_id[current_env_ids] = state_indices
+            else:
+                states_to_reset_from = sample_from_nested_dict(self.datasets[dataset_idx], state_indices)
+                current_state_indices = self.last_state_indices[current_env_ids].clone()
+                current_should_resample = should_resample[mask]
+                if torch.any(current_should_resample):
+                    sampled_state_indices = _sample_state_indices(dataset_idx, int(current_should_resample.sum().item()))
+                    current_state_indices[current_should_resample] = sampled_state_indices
+                self.last_state_indices[current_env_ids] = current_state_indices
+                self._has_cached_state[current_env_ids] = True
+                states_to_reset_from = sample_from_nested_dict(self.datasets[dataset_idx], current_state_indices)
             self._env.scene.reset_to(states_to_reset_from["initial_state"], env_ids=current_env_ids, is_relative=True)
+        
+        self.first_reset = False
 
         # Reset velocities
         robot: Articulation = self._env.scene["robot"]
