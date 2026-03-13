@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Train a supervised Gaussian policy from state-action dataset."""
+"""Train a supervised MLP policy from state-action dataset."""
 
 from __future__ import annotations
 
@@ -12,15 +12,24 @@ import argparse
 import json
 import os
 import random
+import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
 
 import torch
 import yaml
-from torch import nn
 from torch.utils.data import DataLoader, Dataset, random_split
 from tqdm.auto import tqdm
+
+try:
+    from uwlab_rl.rsl_rl.supervised_mlp_policy import SupervisedMLPPolicy
+except ModuleNotFoundError:
+    _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    _source_root = os.path.join(_repo_root, "source", "uwlab_rl")
+    if _source_root not in sys.path:
+        sys.path.append(_source_root)
+    from uwlab_rl.rsl_rl.supervised_mlp_policy import SupervisedMLPPolicy
 
 
 class StateActionDataset(Dataset):
@@ -46,48 +55,14 @@ class StateActionDataset(Dataset):
         return self.states[index], self.actions[index]
 
 
-class GaussianMLPPolicy(nn.Module):
-    """MLP that predicts Gaussian mean with a global diagonal log-std parameter."""
-
-    def __init__(self, state_dim: int, action_dim: int, hidden_dims: list[int], log_std_min: float, log_std_max: float):
-        super().__init__()
-
-        layers: list[nn.Module] = []
-        in_dim = state_dim
-        for hidden_dim in hidden_dims:
-            layers.append(nn.Linear(in_dim, hidden_dim))
-            layers.append(nn.ReLU())
-            in_dim = hidden_dim
-
-        self.backbone = nn.Sequential(*layers)
-        self.mean_head = nn.Linear(in_dim, action_dim)
-        self.log_std_param = nn.Parameter(torch.zeros(action_dim))
-
-        self.action_dim = action_dim
-        self.log_std_min = log_std_min
-        self.log_std_max = log_std_max
-
-    def forward(self, states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        features = self.backbone(states)
-        mean = self.mean_head(features)
-        log_std = torch.clamp(self.log_std_param, self.log_std_min, self.log_std_max)
-        log_std = log_std.unsqueeze(0).expand_as(mean)
-        return mean, log_std
-
-
-def gaussian_nll(actions: torch.Tensor, mean: torch.Tensor, log_std: torch.Tensor) -> torch.Tensor:
-    """Negative log likelihood of diagonal Gaussian policy."""
-    log_2pi = 1.8378770664093453  # log(2 * pi)
-    inv_var = torch.exp(-2.0 * log_std)
-    per_dim_nll = 0.5 * (((actions - mean) ** 2) * inv_var + 2.0 * log_std + log_2pi)
-    return per_dim_nll.sum(dim=-1).mean()
-
-
 @dataclass
 class TrainConfig:
     dataset_path: str
     output_dir: str
     hidden_dims: list[int]
+    loss_type: str
+    normalize_action_targets: bool
+    action_norm_min_std: float
     log_std_min: float
     log_std_max: float
     learning_rate: float
@@ -116,6 +91,9 @@ def load_config(config_path: str) -> TrainConfig:
         dataset_path=str(dataset_cfg["path"]),
         output_dir=str(train_cfg.get("output_dir", "logs/rsl_rl/supervised")),
         hidden_dims=list(model_cfg.get("hidden_dims", [512, 256, 128, 64])),
+        loss_type=str(model_cfg.get("loss_type", "gaussian_nll")),
+        normalize_action_targets=bool(model_cfg.get("normalize_action_targets", True)),
+        action_norm_min_std=float(model_cfg.get("action_norm_min_std", 1.0e-6)),
         log_std_min=float(model_cfg.get("log_std_min", -5.0)),
         log_std_max=float(model_cfg.get("log_std_max", 2.0)),
         learning_rate=float(train_cfg.get("learning_rate", 3e-4)),
@@ -180,7 +158,7 @@ def make_dataloaders(
     return train_loader, val_loader
 
 
-def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> float:
+def evaluate(model: SupervisedMLPPolicy, loader: DataLoader, device: torch.device) -> float:
     model.eval()
     total_loss = 0.0
     total_count = 0
@@ -190,8 +168,7 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> floa
             states = states.to(device, non_blocking=True)
             actions = actions.to(device, non_blocking=True)
 
-            mean, log_std = model(states)
-            loss = gaussian_nll(actions, mean, log_std)
+            loss = model.compute_loss(states, actions)
 
             if not torch.isfinite(loss):
                 raise RuntimeError(f"Non-finite validation loss detected: {loss.item()}")
@@ -205,7 +182,7 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> floa
 
 def save_checkpoint(
     path: str,
-    model: nn.Module,
+    model: SupervisedMLPPolicy,
     optimizer: torch.optim.Optimizer,
     epoch: int,
     state_dim: int,
@@ -222,9 +199,13 @@ def save_checkpoint(
             "state_dim": state_dim,
             "action_dim": action_dim,
             "hidden_dims": cfg.hidden_dims,
+            "loss_type": cfg.loss_type,
             "log_std_min": cfg.log_std_min,
             "log_std_max": cfg.log_std_max,
-            "best_val_nll": best_val_loss,
+            "best_val_loss": best_val_loss,
+            "action_norm_mean": model.action_norm_mean.detach().cpu(),
+            "action_norm_std": model.action_norm_std.detach().cpu(),
+            "normalize_action_targets": cfg.normalize_action_targets,
             "config": asdict(cfg),
             "config_path": os.path.abspath(config_path),
             "dataset_path": os.path.abspath(cfg.dataset_path),
@@ -264,6 +245,9 @@ def init_wandb(
             "action_dim": action_dim,
             "model": {
                 "hidden_dims": cfg.hidden_dims,
+                "loss_type": cfg.loss_type,
+                "normalize_action_targets": cfg.normalize_action_targets,
+                "action_norm_min_std": cfg.action_norm_min_std,
                 "log_std_min": cfg.log_std_min,
                 "log_std_max": cfg.log_std_max,
             },
@@ -304,14 +288,14 @@ def log_checkpoint_to_wandb(
     wandb_module.log(
         {
             "epoch": epoch,
-            f"checkpoint/{checkpoint_kind}_val_nll": val_loss,
+            f"checkpoint/{checkpoint_kind}_val_loss": val_loss,
         }
     )
     wandb_module.save(abs_path, base_path=os.path.dirname(abs_path), policy="now")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train a supervised Gaussian policy from collected dataset.")
+    parser = argparse.ArgumentParser(description="Train a supervised MLP policy from collected dataset.")
     parser.add_argument(
         "--config",
         type=str,
@@ -359,13 +343,21 @@ def main():
     action_dim = int(actions.shape[1])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = GaussianMLPPolicy(
+    model : SupervisedMLPPolicy = SupervisedMLPPolicy(
         state_dim=state_dim,
         action_dim=action_dim,
         hidden_dims=cfg.hidden_dims,
+        loss_type=cfg.loss_type,
         log_std_min=cfg.log_std_min,
         log_std_max=cfg.log_std_max,
     ).to(device)
+    if cfg.normalize_action_targets:
+        action_norm_mean = actions.mean(dim=0)
+        action_norm_std = actions.std(dim=0, unbiased=False).clamp_min(cfg.action_norm_min_std)
+    else:
+        action_norm_mean = torch.zeros(action_dim, dtype=torch.float32)
+        action_norm_std = torch.ones(action_dim, dtype=torch.float32)
+    model.set_action_normalization(action_norm_mean, action_norm_std)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
 
@@ -383,7 +375,7 @@ def main():
     )
 
     best_val_loss = float("inf")
-    history: dict[str, list[float]] = {"train_nll": [], "val_nll": []}
+    history: dict[str, list[float]] = {"train_loss": [], "val_loss": []}
 
     epoch_iterator = tqdm(range(cfg.epochs), desc="Epochs", unit="epoch")
     for epoch in epoch_iterator:
@@ -395,8 +387,7 @@ def main():
             batch_states = batch_states.to(device, non_blocking=True)
             batch_actions = batch_actions.to(device, non_blocking=True)
 
-            mean, log_std = model(batch_states)
-            loss = gaussian_nll(batch_actions, mean, log_std)
+            loss = model.compute_loss(batch_states, batch_actions)
 
             if not torch.isfinite(loss):
                 raise RuntimeError(
@@ -415,23 +406,23 @@ def main():
         train_loss = total_train_loss / max(1, total_train_count)
         val_loss = evaluate(model, val_loader, device)
 
-        history["train_nll"].append(train_loss)
-        history["val_nll"].append(val_loss)
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
 
-        epoch_iterator.set_postfix(train_nll=f"{train_loss:.4f}", val_nll=f"{val_loss:.4f}")
-        print(f"[Epoch {epoch + 1:03d}/{cfg.epochs:03d}] train_nll={train_loss:.6f} val_nll={val_loss:.6f}")
+        epoch_iterator.set_postfix(train_loss=f"{train_loss:.4f}", val_loss=f"{val_loss:.4f}")
+        print(f"[Epoch {epoch + 1:03d}/{cfg.epochs:03d}] train_loss={train_loss:.6f} val_loss={val_loss:.6f}")
         if wandb_run is not None and wandb_module is not None:
-            wandb_module.log(
-                {
-                    "epoch": epoch + 1,
-                    "train/nll": train_loss,
-                    "val/nll": val_loss,
-                    "train/lr": optimizer.param_groups[0]["lr"],
-                    "train/log_std_mean": float(model.log_std_param.detach().mean().item()),
-                    "train/log_std_min": float(model.log_std_param.detach().min().item()),
-                    "train/log_std_max": float(model.log_std_param.detach().max().item()),
-                }
-            )
+            log_payload: dict[str, float] = {
+                "epoch": epoch + 1,
+                "train/loss": train_loss,
+                "val/loss": val_loss,
+                "train/lr": float(optimizer.param_groups[0]["lr"]),
+            }
+            if model.log_std_param is not None:
+                log_payload["train/log_std_mean"] = float(model.log_std_param.detach().mean().item())
+                log_payload["train/log_std_min"] = float(model.log_std_param.detach().min().item())
+                log_payload["train/log_std_max"] = float(model.log_std_param.detach().max().item())
+            wandb_module.log(log_payload)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -497,7 +488,7 @@ def main():
             checkpoint_path=last_checkpoint_path,
             checkpoint_kind="last_model",
             epoch=cfg.epochs,
-            val_loss=history["val_nll"][-1],
+            val_loss=history["val_loss"][-1],
         )
 
     with open(os.path.join(run_dir, "history.json"), "w", encoding="utf-8") as f:
@@ -507,11 +498,11 @@ def main():
         json.dump(asdict(cfg), f, indent=2)
 
     if wandb_run is not None:
-        wandb_run.summary["best_val_nll"] = best_val_loss
+        wandb_run.summary["best_val_loss"] = best_val_loss
         wandb_run.summary["output_dir"] = os.path.abspath(run_dir)
         wandb_run.finish()
 
-    print(f"[INFO] Training complete. Best validation NLL: {best_val_loss:.6f}")
+    print(f"[INFO] Training complete. Best validation loss: {best_val_loss:.6f}")
     print(f"[INFO] Saved outputs to: {os.path.abspath(run_dir)}")
 
 

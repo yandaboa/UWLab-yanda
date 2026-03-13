@@ -647,6 +647,7 @@ def main() -> None:
                         demo_lengths=demo_lengths_i,
                         current_obs=current_obs_tensor,
                     )
+                    action = action / 3
                     action_np = action.squeeze(0).detach().cpu().numpy().astype(np.float32, copy=False)
                     action_log.append(action_np)
 

@@ -521,7 +521,7 @@ class TerminationsCfg:
 
     abnormal_robot = DoneTerm(func=omni_reset_mdp.abnormal_robot_state)
 
-    success = DoneTerm(func=task_mdp.success_term)
+    success = DoneTerm(func=omni_reset_mdp.terminate_on_success, params={"delay_steps": 5})
 
 
 def make_insertive_object(usd_path: str):

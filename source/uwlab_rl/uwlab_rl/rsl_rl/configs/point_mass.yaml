@@ -23,7 +23,7 @@ model:
   normalize_action_targets: true
   action_norm_num_batches: 32
   action_norm_min_std: 1.0e-6
-  context_token_layout: state_action
+  context_token_layout: state_only
   include_actions_in_context: false
   include_rewards_in_context: false
   share_current_and_context_obs_projection: true

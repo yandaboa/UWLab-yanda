@@ -2,7 +2,10 @@ dataset:
   path: /home/ubuntu/lti/UWLab-ICL/supervised_dataset.pt
 
 model:
-  hidden_dims: [512, 256, 128, 64]
+  hidden_dims: [1024, 512, 256, 128, 64]
+  loss_type: gaussian_nll
+  normalize_action_targets: true
+  action_norm_min_std: 1.0e-6
   log_std_min: -5.0
   log_std_max: 2.0
 

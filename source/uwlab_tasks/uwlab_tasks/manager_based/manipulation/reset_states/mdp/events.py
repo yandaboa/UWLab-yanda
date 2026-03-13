@@ -1055,7 +1055,7 @@ class MultiResetManager(ManagerTermBase):
             self.success_monitor = success_monitor_cfg.class_type(success_monitor_cfg)
 
         self.task_id = torch.randint(0, self.num_tasks, (self.num_envs,), device=self.device)
-        self.state_id = torch.zeros((self.num_envs,), device=self.device, dtype=torch.int32)
+        self.state_id = torch.zeros((self.num_envs,), device=self.device, dtype=torch.int64)
         self.first_reset = True
         # TODO: this is redundant since we already have state_id...
         self.last_state_indices = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
@@ -1072,6 +1072,7 @@ class MultiResetManager(ManagerTermBase):
         probs: list[float],
         success: str | None = None,
         iterate_through_resets: bool = False,
+        reset_to_same_state: bool = False,
     ) -> None:
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self._env.device)
@@ -1096,7 +1097,7 @@ class MultiResetManager(ManagerTermBase):
 
         # Sample which dataset to use for each environment
         raw_num_similar_trajectories = getattr(self._env, "num_similar_trajectories", None)
-        assert not (self.reset_to_same_state and raw_num_similar_trajectories is None)
+        assert not (self.reset_to_same_state and raw_num_similar_trajectories is not None)
         if not self.reset_to_same_state:
             num_collected_episodes = getattr(self._env, "num_collected_episodes", None)
             if (
@@ -1117,6 +1118,8 @@ class MultiResetManager(ManagerTermBase):
                 sampled_dataset_indices = torch.multinomial(self.probs, int(should_resample.sum().item()), replacement=True)
                 dataset_indices[should_resample] = sampled_dataset_indices
             self.task_id[env_ids] = dataset_indices
+        else:
+            dataset_indices = self.task_id[env_ids].clone()
 
         def _sample_state_indices(dataset_idx: int, count: int) -> torch.Tensor:
             num_states_for_dataset = int(self.num_states[dataset_idx].item())
